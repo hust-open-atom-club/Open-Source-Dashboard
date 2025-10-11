@@ -80,3 +80,119 @@ select {
     color: white;
     border: 1px solid #646cff;
 }
+
+
+/* Styles for Activity List */
+.activity-lists-wrapper {
+    display: flex;
+    gap: 20px;
+    margin-top: 20px;
+    text-align: left;
+}
+
+.activity-list-container {
+    flex: 1;
+    background-color: #333;
+    padding: 20px;
+    border-radius: 8px;
+}
+
+.activity-list-container h3 {
+    color: #646cff;
+    border-bottom: 1px solid #444;
+    padding-bottom: 10px;
+    margin-top: 0;
+}
+
+.activity-list {
+    list-style: none;
+    padding: 0;
+}
+
+.activity-item {
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 1px dotted #444;
+}
+
+.activity-item a {
+    color: #fff;
+    text-decoration: none;
+    font-weight: bold;
+    display: block;
+    margin-bottom: 5px;
+}
+
+.activity-item a:hover {
+    color: #646cff;
+}
+
+.activity-meta {
+    font-size: 0.8em;
+    color: #aaa;
+}
+
+.repo-name {
+    margin-right: 10px;
+}
+
+.author {
+    margin-right: 10px;
+}
+
+.state {
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: bold;
+    text-transform: uppercase;
+    font-size: 0.7em;
+}
+
+.state-open {
+    background-color: #28a745; /* Green */
+    color: white;
+}
+
+.state-closed {
+    background-color: #dc3545; /* Red */
+    color: white;
+}
+
+
+/* Styles for Pagination */
+.pagination-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 10px 0;
+    padding: 5px 0;
+    border-top: 1px solid #444;
+    border-bottom: 1px solid #444;
+    font-size: 0.9em;
+    color: #ccc;
+}
+
+.pagination-controls button {
+    background-color: #444;
+    color: #fff;
+    border: 1px solid #646cff;
+    padding: 5px 10px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+}
+
+.pagination-controls button:hover:not(:disabled) {
+    background-color: #646cff;
+}
+
+.pagination-controls button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.page-info {
+    margin: 0 15px;
+    font-weight: bold;
+    color: #646cff;
+}

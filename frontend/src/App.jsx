@@ -1,16 +1,112 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import axios from 'axios';
 import ReactECharts from 'echarts-for-react';
 import './index.css'; // Import the basic styles
 
 const API_BASE_URL = 'http://localhost:3000/api/v1'; // Should be configured via Vite env
+const ITEMS_PER_PAGE = 10; // Default items per page
+
+// Component for Pagination Controls
+const Pagination = ({ currentPage, totalCount, onPageChange, type }) => {
+  const totalPages = Math.ceil(totalCount / ITEMS_PER_PAGE);
+  const startItem = (currentPage - 1) * ITEMS_PER_PAGE + 1;
+  const endItem = Math.min(currentPage * ITEMS_PER_PAGE, totalCount);
+
+  if (totalCount === 0) return null;
+
+  return (
+    <div className="pagination-controls">
+      <span>
+        {type === 'prs' ? 'PR' : 'Issue'} 总数: {totalCount} | 显示 {startItem}-{endItem} 条
+      </span>
+      <button
+        onClick={() => onPageChange(currentPage - 1)}
+        disabled={currentPage === 1}
+      >
+        &larr; 上一页
+      </button>
+      <span className="page-info">
+        第 {currentPage} / {totalPages} 页
+      </span>
+      <button
+        onClick={() => onPageChange(currentPage + 1)}
+        disabled={currentPage === totalPages}
+      >
+        下一页 &rarr;
+      </button>
+    </div>
+  );
+};
+
+// Component to display a list of activities (PRs or Issues)
+const ActivityList = ({ title, activities, totalCount, currentPage, onPageChange, type }) => (
+  <div className="activity-list-container">
+    <h3>{title}</h3>
+    <Pagination
+      currentPage={currentPage}
+      totalCount={totalCount}
+      onPageChange={onPageChange}
+      type={type}
+    />
+    {activities.length === 0 ? (
+      <p>暂无最新活动。</p>
+    ) : (
+      <ul className="activity-list">
+        {activities.map((item) => (
+          <li key={item.id} className="activity-item">
+            <a href={item.url} target="_blank" rel="noopener noreferrer" title={item.title}>
+              {item.title}
+            </a>
+            <div className="activity-meta">
+              <span className="repo-name">[{item.repo}]</span>
+              <span className="author">@{item.author}</span>
+              <span className={`state state-${item.state}`}>{item.state}</span>
+            </div>
+          </li>
+        ))}
+      </ul>
+    )}
+    <Pagination
+      currentPage={currentPage}
+      totalCount={totalCount}
+      onPageChange={onPageChange}
+      type={type}
+    />
+  </div>
+);
 
 function App() {
   const [organizations, setOrganizations] = useState([]);
   const [selectedOrg, setSelectedOrg] = useState('');
   const [timeseriesData, setTimeseriesData] = useState([]);
+  
+  // State for PRs
+  const [prsData, setPrsData] = useState({ activities: [], total_count: 0, page: 1 });
+  // State for Issues
+  const [issuesData, setIssuesData] = useState({ activities: [], total_count: 0, page: 1 });
+
   const [loading, setLoading] = useState(false);
+  const [activityLoading, setActivityLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  // Function to fetch activities with pagination
+  const fetchActivities = useCallback(async (orgName, type, page) => {
+    if (!orgName) return;
+    
+    const params = {
+      type: type,
+      page: page,
+      per_page: ITEMS_PER_PAGE,
+    };
+
+    try {
+      const response = await axios.get(`${API_BASE_URL}/organizations/${orgName}/latest-activity`, { params });
+      return response.data;
+    } catch (err) {
+      console.error(`Error fetching latest ${type} activities:`, err);
+      return { activities: [], total_count: 0, page: 1 };
+    }
+  }, []);
 
   // Fetch list of monitored organizations on component mount
   useEffect(() => {
@@ -53,7 +149,42 @@ function App() {
       }
     };
     fetchTimeseries();
+    
+    // Reset activity pages and fetch first page when organization changes
+    setPrsData(prev => ({ ...prev, page: 1 }));
+    setIssuesData(prev => ({ ...prev, page: 1 }));
+    
   }, [selectedOrg]);
+
+  // Fetch latest activities (PRs and Issues) when selectedOrg or page changes
+  useEffect(() => {
+    if (!selectedOrg) return;
+
+    const loadActivities = async () => {
+      setActivityLoading(true);
+      
+      // Fetch PRs for current page
+      const prsResult = await fetchActivities(selectedOrg, 'prs', prsData.page);
+      setPrsData(prev => ({ ...prev, activities: prsResult.activities, total_count: prsResult.total_count, per_page: prsResult.per_page }));
+
+      // Fetch Issues for current page
+      const issuesResult = await fetchActivities(selectedOrg, 'issues', issuesData.page);
+      setIssuesData(prev => ({ ...prev, activities: issuesResult.activities, total_count: issuesResult.total_count, per_page: issuesResult.per_page }));
+
+      setActivityLoading(false);
+    };
+    
+    loadActivities();
+  }, [selectedOrg, prsData.page, issuesData.page, fetchActivities]); // Dependency on page state
+
+  // Handlers for page change
+  const handlePrsPageChange = (newPage) => {
+    setPrsData(prev => ({ ...prev, page: newPage }));
+  };
+
+  const handleIssuesPageChange = (newPage) => {
+    setIssuesData(prev => ({ ...prev, page: newPage }));
+  };
 
   // Extract the latest snapshot data for the data cards
   const latestSnapshot = useMemo(() => {
@@ -62,7 +193,7 @@ function App() {
     return timeseriesData[timeseriesData.length - 1];
   }, [timeseriesData]);
 
-  // ECharts configuration
+  // ECharts configuration (unchanged)
   const chartOptions = useMemo(() => {
     if (timeseriesData.length === 0) {
       return {};
@@ -162,7 +293,7 @@ function App() {
       </select>
 
       {error && <p style={{ color: 'red' }}>错误: {error}</p>}
-      {loading && <p>正在加载数据...</p>}
+      {loading && <p>正在加载时间序列数据...</p>}
 
       {latestSnapshot && (
         <>
@@ -195,6 +326,31 @@ function App() {
           <div className="chart-area">
             <ReactECharts option={chartOptions} style={{ height: '100%', width: '100%' }} />
           </div>
+
+          {/* 4. Latest Activity Lists */}
+          <h2 style={{ marginTop: '40px' }}>最新活动详情 (实时)</h2>
+          {activityLoading ? (
+            <p>正在加载最新活动列表...</p>
+          ) : (
+            <div className="activity-lists-wrapper">
+              <ActivityList 
+                title="最新 Pull Requests (PR)" 
+                activities={prsData.activities} 
+                totalCount={prsData.total_count}
+                currentPage={prsData.page}
+                onPageChange={handlePrsPageChange}
+                type="prs"
+              />
+              <ActivityList 
+                title="最新 Issues" 
+                activities={issuesData.activities} 
+                totalCount={issuesData.total_count}
+                currentPage={issuesData.page}
+                onPageChange={handleIssuesPageChange}
+                type="issues"
+              />
+            </div>
+          )}
         </>
       )}
       {!selectedOrg && organizations.length > 0 && <p>请从下拉菜单中选择一个组织以查看数据。</p>}

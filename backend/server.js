@@ -253,6 +253,15 @@ cron.schedule('*/5 * * * *', runDailyIngestionJob); // Every 5 minutes for testi
 
 // --- API Routes ---
 
+// Helper function for security check
+async function checkMonitoredOrg(orgName) {
+    const orgResult = await pool.query('SELECT id FROM organizations WHERE name = $1', [orgName]);
+    if (orgResult.rows.length === 0) {
+        return false;
+    }
+    return true;
+}
+
 // GET /api/v1/organizations
 app.get('/api/v1/organizations', async (req, res) => {
     try {
@@ -274,12 +283,9 @@ app.get('/api/v1/organizations/:orgName/timeseries', async (req, res) => {
 
     try {
         // 1. Security Check: Check if organization is monitored
-        const orgResult = await pool.query('SELECT id FROM organizations WHERE name = $1', [orgName]);
-        if (orgResult.rows.length === 0) {
-            // Gated Access: Reject requests for unmonitored organizations
+        if (!(await checkMonitoredOrg(orgName))) {
             return res.status(403).json({ error: `Organization "${orgName}" is not a monitored entity.` });
         }
-        const orgId = orgResult.rows[0].id;
 
         // 2. Caching Logic: Check Redis
         const cachedData = await redisClient.get(cacheKey);
@@ -300,6 +306,9 @@ app.get('/api/v1/organizations/:orgName/timeseries', async (req, res) => {
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - days);
         const startDateStr = startDate.toISOString().split('T')[0];
+
+        const orgIdResult = await pool.query('SELECT id FROM organizations WHERE name = $1', [orgName]);
+        const orgId = orgIdResult.rows[0].id;
 
         const dataResult = await pool.query(
             `SELECT snapshot_date, new_prs, closed_merged_prs, new_issues, closed_issues, active_contributors, new_repos
@@ -330,6 +339,66 @@ app.get('/api/v1/organizations/:orgName/timeseries', async (req, res) => {
         res.status(500).json({ error: 'Internal Server Error' });
     }
 });
+
+// GET /api/v1/organizations/{orgName}/latest-activity
+app.get('/api/v1/organizations/:orgName/latest-activity', async (req, res) => {
+    const { orgName } = req.params;
+    const { type } = req.query; // 'prs' or 'issues'
+    
+    // Parse pagination parameters
+    const page = parseInt(req.query.page) || 1;
+    const per_page = parseInt(req.query.per_page) || 10;
+    
+    // GitHub Search API limits per_page to 100
+    const limit = Math.min(per_page, 100);
+
+    try {
+        // 1. Security Check: Check if organization is monitored
+        if (!(await checkMonitoredOrg(orgName))) {
+            return res.status(403).json({ error: `Organization "${orgName}" is not a monitored entity.` });
+        }
+
+        let query;
+        if (type === 'prs') {
+            // Search for open Pull Requests, sorted by creation date descending
+            query = `org:${orgName} is:pr is:open sort:created-desc`;
+        } else if (type === 'issues') {
+            // Search for open Issues (excluding PRs), sorted by creation date descending
+            query = `org:${orgName} is:issue is:open -is:pr sort:created-desc`;
+        } else {
+            return res.status(400).json({ error: 'Invalid activity type. Must be "prs" or "issues".' });
+        }
+
+        const searchResults = await githubRest('/search/issues', {
+            q: query,
+            per_page: limit,
+            page: page,
+        });
+
+        const activities = searchResults.items.map(item => ({
+            id: item.id,
+            title: item.title,
+            url: item.html_url,
+            repo: item.repository_url.split('/').pop(),
+            author: item.user.login,
+            created_at: item.created_at,
+            state: item.state,
+        }));
+
+        // Return the activities and the total count for pagination
+        res.json({
+            activities: activities,
+            total_count: searchResults.total_count,
+            page: page,
+            per_page: limit,
+        });
+
+    } catch (error) {
+        console.error(`Error fetching latest activity for ${orgName}:`, error.message);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
 
 // --- Server Start ---
 app.listen(PORT, () => {

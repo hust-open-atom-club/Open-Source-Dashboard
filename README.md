@@ -23,7 +23,7 @@ oss-dashboard/
 │   ├── node_modules/
 │   ├── package.json          # 前端依赖
 │   ├── src/
-│   │   ├── App.jsx           # 主应用组件，包含数据流和 ECharts 逻辑
+│   │   ├── App.jsx           # 主应用组件，包含数据流、ECharts 逻辑和最新活动列表
 │   │   ├── index.css         # 基础样式
 │   │   └── main.jsx
 │   └── vite.config.js
@@ -115,17 +115,23 @@ npm run dev
 *   **文件:** \`backend/server.js\`
 *   **实现:** 使用 `node-cron` 调度，每 5 分钟运行一次 `runDailyIngestionJob` 函数。
 *   **数据源:** 使用 **GitHub REST API** (`/orgs/:org/repos`, `/search/issues`) 来获取过去 24 小时内的新增 PR、合并 PR、新增 Issue、关闭 Issue、活跃贡献者和新增仓库数量。
-*   **注意:** 考虑到 GitHub API 的复杂性，`server.js` 中的数据抓取逻辑是**基于 REST API 的实用实现**，它通过两次 `search/issues` 调用和一次 `orgs/:org/repos` 调用来聚合数据。在处理大型组织时，可能需要更复杂的**分页**和**速率限制**处理逻辑。
 
 ### 2. API 接口
 
 *   **文件:** \`backend/server.js\`
-*   **安全性 (Gated Access):** \`GET /api/v1/organizations/:orgName/timeseries\` 接口会首先查询 `organizations` 表。如果请求的组织名不在表中，将返回 `403 Forbidden`，严格限制了数据访问范围。
-*   **缓存:** 使用 Redis 实现了时间序列数据的缓存。首次请求会查询 PostgreSQL，并将结果缓存 1 小时。后续请求将直接从 Redis 返回，大大提高响应速度。
+*   **安全性 (Gated Access):** 所有 API 接口都会首先查询 `organizations` 表。如果请求的组织名不在表中，将返回 `403 Forbidden`，严格限制了数据访问范围。
+*   **时间序列数据 (`/timeseries`):**
+    *   返回历史活动趋势数据。
+    *   使用 Redis 实现了 1 小时的缓存，以提高响应速度。
+*   **最新活动列表 (`/latest-activity`):**
+    *   **支持分页。** 实时调用 GitHub REST API (`/search/issues`)，支持通过 `page` 和 `per_page` 参数进行分页。
+    *   返回结果包含活动列表、总结果数 (`total_count`)、当前页码和每页数量，以便前端实现完整的翻页功能。
 
 ### 3. 前端可视化
 
 *   **文件:** \`frontend/src/App.jsx\`
-*   **数据流:** 页面加载时，首先调用 `/organizations` 接口填充下拉菜单。选择组织后，调用 `/timeseries` 接口获取数据。
-*   **可视化:** 使用 **ECharts** 库展示了“新增 PR”、“合并 PR”、“新增 Issue”和“关闭 Issue”四项指标在过去 30 天的趋势图。同时，页面顶部展示了最新一天的活动快照数据卡片。
+*   **数据流:** 页面加载时，首先调用 `/organizations` 接口填充下拉菜单。选择组织后，同时调用 `/timeseries` 和 `/latest-activity` 接口获取数据。
+*   **可视化:**
+    *   使用 **ECharts** 库展示了历史趋势图。
+    *   **新增** 列表组件，展示实时获取的最新 Pull Request 和 Issue 的详细信息，并**支持翻页**。
 
