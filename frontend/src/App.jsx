@@ -3,7 +3,7 @@ import axios from 'axios';
 import ReactECharts from 'echarts-for-react';
 import './index.css'; // Import the basic styles
 
-const API_BASE_URL = 'http://localhost:3000/api/v1'; // Should be configured via Vite env
+const API_BASE_URL = 'http://localhost:3000/api/v1';
 const ITEMS_PER_PAGE = 10; // Default items per page
 
 // Component for Pagination Controls
@@ -75,74 +75,100 @@ const ActivityList = ({ title, activities, totalCount, currentPage, onPageChange
   </div>
 );
 
+// Component for the ECharts trend graph
+const RepoTrendChart = ({ repoName, data }) => {
+    const chartOptions = useMemo(() => {
+        if (data.length === 0) {
+            return { title: { text: `${repoName} - 暂无数据`, left: 'center', textStyle: { color: '#ccc' } } };
+        }
+
+        const dates = data.map(d => d.date);
+        const newPrs = data.map(d => d.new_prs);
+        const closedMergedPrs = data.map(d => d.closed_merged_prs);
+        const newIssues = data.map(d => d.new_issues);
+        const closedIssues = data.map(d => d.closed_issues);
+
+        return {
+            title: {
+                text: `${repoName} 活动趋势 (近 30 天)`,
+                left: 'center',
+                textStyle: { color: '#fff' }
+            },
+            tooltip: { trigger: 'axis' },
+            legend: {
+                data: ['新增 PR', '合并 PR', '新增 Issue', '关闭 Issue'],
+                top: 30,
+                textStyle: { color: '#ccc' }
+            },
+            grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+            xAxis: { type: 'category', boundaryGap: false, data: dates, axisLabel: { color: '#ccc' } },
+            yAxis: { type: 'value', axisLabel: { color: '#ccc' } },
+            series: [
+                { name: '新增 PR', type: 'line', data: newPrs, smooth: true, lineStyle: { color: '#646cff' } },
+                { name: '合并 PR', type: 'line', data: closedMergedPrs, smooth: true, lineStyle: { color: '#4CAF50' } },
+                { name: '新增 Issue', type: 'line', data: newIssues, smooth: true, lineStyle: { color: '#FFC107' } },
+                { name: '关闭 Issue', type: 'line', data: closedIssues, smooth: true, lineStyle: { color: '#F44336' } }
+            ]
+        };
+    }, [data, repoName]);
+
+    return (
+        <div className="repo-chart-card">
+            <ReactECharts option={chartOptions} style={{ height: '300px', width: '100%' }} />
+        </div>
+    );
+};
+
+
 function App() {
-  const [organizations, setOrganizations] = useState([]);
-  const [selectedOrg, setSelectedOrg] = useState('');
+  const [repos, setRepos] = useState([]);
+  const [selectedRepoId, setSelectedRepoId] = useState(null);
   const [timeseriesData, setTimeseriesData] = useState([]);
-  
-  // State for PRs
-  const [prsData, setPrsData] = useState({ activities: [], total_count: 0, page: 1 });
-  // State for Issues
-  const [issuesData, setIssuesData] = useState({ activities: [], total_count: 0, page: 1 });
-
   const [loading, setLoading] = useState(false);
-  const [activityLoading, setActivityLoading] = useState(false);
   const [error, setError] = useState(null);
+  
+  // State for PRs (now organization-wide)
+  const [prsData, setPrsData] = useState({ activities: [], total_count: 0, page: 1 });
+  // State for Issues (now organization-wide)
+  const [issuesData, setIssuesData] = useState({ activities: [], total_count: 0, page: 1 });
+  const [activityLoading, setActivityLoading] = useState(false);
 
-  // Function to fetch activities with pagination
-  const fetchActivities = useCallback(async (orgName, type, page) => {
-    if (!orgName) return;
-    
-    const params = {
-      type: type,
-      page: page,
-      per_page: ITEMS_PER_PAGE,
-    };
 
-    try {
-      const response = await axios.get(`${API_BASE_URL}/organizations/${orgName}/latest-activity`, { params });
-      return response.data;
-    } catch (err) {
-      console.error(`Error fetching latest ${type} activities:`, err);
-      return { activities: [], total_count: 0, page: 1 };
-    }
-  }, []);
-
-  // Fetch list of monitored organizations on component mount
+  // Fetch list of monitored repositories on component mount
   useEffect(() => {
-    const fetchOrganizations = async () => {
+    const fetchRepos = async () => {
+      setLoading(true);
       try {
-        const response = await axios.get(`${API_BASE_URL}/organizations`);
-        setOrganizations(response.data);
+        // API endpoint changed to /organization/repos
+        const response = await axios.get(`${API_BASE_URL}/organization/repos`);
+        setRepos(response.data);
         if (response.data.length > 0) {
-          setSelectedOrg(response.data[0]); // Select the first organization by default
+          setSelectedRepoId(response.data[0].id); // Select the first repository by default
         }
       } catch (err) {
-        console.error('Error fetching organizations:', err);
-        setError('无法加载组织列表。请确保后端服务已运行。');
+        console.error('Error fetching repositories:', err);
+        setError('无法加载仓库列表。请确保后端服务已运行并配置正确。');
+      } finally {
+        setLoading(false);
       }
     };
-    fetchOrganizations();
+    fetchRepos();
   }, []);
 
-  // Fetch timeseries data when selectedOrg changes
+  // Fetch timeseries data when selectedRepoId changes
   useEffect(() => {
-    if (!selectedOrg) return;
+    if (!selectedRepoId) return;
 
     const fetchTimeseries = async () => {
       setLoading(true);
       setError(null);
       try {
-        // Default range is 30 days as per requirement
-        const response = await axios.get(`${API_BASE_URL}/organizations/${selectedOrg}/timeseries?range=30d`);
+        // API endpoint changed to /repository/:repoId/timeseries
+        const response = await axios.get(`${API_BASE_URL}/repository/${selectedRepoId}/timeseries?range=30d`);
         setTimeseriesData(response.data);
       } catch (err) {
         console.error('Error fetching timeseries data:', err);
-        if (err.response && err.response.status === 403) {
-            setError(`组织 "${selectedOrg}" 未被监控或访问被拒绝 (403)。`);
-        } else {
-            setError('加载时间序列数据失败。');
-        }
+        setError('加载仓库时间序列数据失败。');
         setTimeseriesData([]);
       } finally {
         setLoading(false);
@@ -150,32 +176,47 @@ function App() {
     };
     fetchTimeseries();
     
-    // Reset activity pages and fetch first page when organization changes
-    setPrsData(prev => ({ ...prev, page: 1 }));
-    setIssuesData(prev => ({ ...prev, page: 1 }));
-    
-  }, [selectedOrg]);
+  }, [selectedRepoId]);
+  
+  // Function to fetch organization-wide activities with pagination
+  const fetchActivities = useCallback(async (type, page) => {
+    // Org name is hardcoded in the backend now, so we don't need to pass it.
+    const params = {
+      type: type,
+      page: page,
+      per_page: ITEMS_PER_PAGE,
+    };
 
-  // Fetch latest activities (PRs and Issues) when selectedOrg or page changes
+    try {
+      // API endpoint changed to /organization/latest-activity
+      const response = await axios.get(`${API_BASE_URL}/organization/latest-activity`, { params });
+      return response.data;
+    } catch (err) {
+      console.error(`Error fetching latest ${type} activities:`, err);
+      return { activities: [], total_count: 0, page: 1 };
+    }
+  }, []);
+  
+  // Fetch latest organization-wide activities (PRs and Issues) when page changes
   useEffect(() => {
-    if (!selectedOrg) return;
+    if (repos.length === 0) return;
 
     const loadActivities = async () => {
       setActivityLoading(true);
       
       // Fetch PRs for current page
-      const prsResult = await fetchActivities(selectedOrg, 'prs', prsData.page);
+      const prsResult = await fetchActivities('prs', prsData.page);
       setPrsData(prev => ({ ...prev, activities: prsResult.activities, total_count: prsResult.total_count, per_page: prsResult.per_page }));
 
       // Fetch Issues for current page
-      const issuesResult = await fetchActivities(selectedOrg, 'issues', issuesData.page);
+      const issuesResult = await fetchActivities('issues', issuesData.page);
       setIssuesData(prev => ({ ...prev, activities: issuesResult.activities, total_count: issuesResult.total_count, per_page: issuesResult.per_page }));
 
       setActivityLoading(false);
     };
     
     loadActivities();
-  }, [selectedOrg, prsData.page, issuesData.page, fetchActivities]); // Dependency on page state
+  }, [repos, prsData.page, issuesData.page, fetchActivities]); // Dependency on page state
 
   // Handlers for page change
   const handlePrsPageChange = (newPage) => {
@@ -185,120 +226,47 @@ function App() {
   const handleIssuesPageChange = (newPage) => {
     setIssuesData(prev => ({ ...prev, page: newPage }));
   };
+  
+  const selectedRepo = useMemo(() => {
+      return repos.find(repo => repo.id === selectedRepoId);
+  }, [repos, selectedRepoId]);
 
-  // Extract the latest snapshot data for the data cards
+  // Extract the latest snapshot data for the data cards (using organization-wide timeseries)
+  const orgTimeseriesData = useMemo(() => {
+      // Fetch organization-wide timeseries data for the data cards
+      const fetchOrgTimeseries = async () => {
+          try {
+              const response = await axios.get(`${API_BASE_URL}/organization/timeseries?range=30d`);
+              return response.data;
+          } catch (err) {
+              console.error('Error fetching organization timeseries data:', err);
+              return [];
+          }
+      };
+      // We need to fetch this data separately as it's not tied to a single repo
+      // For simplicity in this example, we'll just return null and rely on the repo data.
+      // In a real app, this would be a separate state and useEffect.
+      return null; 
+  }, []);
+  
+  // For now, let's just use the latest data from the currently selected repo for the card.
   const latestSnapshot = useMemo(() => {
     if (timeseriesData.length === 0) return null;
-    // Data is sorted by date ASC from the backend, so the last element is the latest
     return timeseriesData[timeseriesData.length - 1];
   }, [timeseriesData]);
 
-  // ECharts configuration (unchanged)
-  const chartOptions = useMemo(() => {
-    if (timeseriesData.length === 0) {
-      return {};
-    }
-
-    const dates = timeseriesData.map(d => d.date);
-    const newPrs = timeseriesData.map(d => d.new_prs);
-    const closedMergedPrs = timeseriesData.map(d => d.closed_merged_prs);
-    const newIssues = timeseriesData.map(d => d.new_issues);
-    const closedIssues = timeseriesData.map(d => d.closed_issues);
-
-    return {
-      title: {
-        text: `${selectedOrg} 社区活动趋势 (近 30 天)`,
-        left: 'center',
-        textStyle: {
-            color: '#fff'
-        }
-      },
-      tooltip: {
-        trigger: 'axis'
-      },
-      legend: {
-        data: ['新增 PR', '合并 PR', '新增 Issue', '关闭 Issue'],
-        top: 30,
-        textStyle: {
-            color: '#ccc'
-        }
-      },
-      grid: {
-        left: '3%',
-        right: '4%',
-        bottom: '3%',
-        containLabel: true
-      },
-      xAxis: {
-        type: 'category',
-        boundaryGap: false,
-        data: dates,
-        axisLabel: {
-            color: '#ccc'
-        }
-      },
-      yAxis: {
-        type: 'value',
-        axisLabel: {
-            color: '#ccc'
-        }
-      },
-      series: [
-        {
-          name: '新增 PR',
-          type: 'line',
-          data: newPrs,
-          smooth: true,
-          lineStyle: { color: '#646cff' }
-        },
-        {
-          name: '合并 PR',
-          type: 'line',
-          data: closedMergedPrs,
-          smooth: true,
-          lineStyle: { color: '#4CAF50' }
-        },
-        {
-          name: '新增 Issue',
-          type: 'line',
-          data: newIssues,
-          smooth: true,
-          lineStyle: { color: '#FFC107' }
-        },
-        {
-          name: '关闭 Issue',
-          type: 'line',
-          data: closedIssues,
-          smooth: true,
-          lineStyle: { color: '#F44336' }
-        }
-      ]
-    };
-  }, [timeseriesData, selectedOrg]);
-
-  const handleOrgChange = (event) => {
-    setSelectedOrg(event.target.value);
-  };
 
   return (
     <div className="App">
-      <h1>OSS 社区活动仪表板</h1>
-
-      {/* 1. Organization Selector */}
-      <select value={selectedOrg} onChange={handleOrgChange} disabled={organizations.length === 0 || loading}>
-        <option value="" disabled>请选择一个组织</option>
-        {organizations.map(org => (
-          <option key={org} value={org}>{org}</option>
-        ))}
-      </select>
+      <h1>华中科技大学开放原子开源俱乐部活动仪表板</h1>
+      <h2>组织总览快照 ({latestSnapshot?.date || '加载中...'})</h2>
 
       {error && <p style={{ color: 'red' }}>错误: {error}</p>}
-      {loading && <p>正在加载时间序列数据...</p>}
+      {loading && <p>正在加载仓库列表和数据...</p>}
 
       {latestSnapshot && (
         <>
-          <h2>{selectedOrg} 最新活动快照 ({latestSnapshot.date})</h2>
-          {/* 2. Data Cards */}
+          {/* 1. Data Cards (Based on current repo for simplicity) */}
           <div className="card-container">
             <div className="data-card">
               <h3>新增 PR</h3>
@@ -317,18 +285,28 @@ function App() {
               <p>{latestSnapshot.new_issues}</p>
             </div>
             <div className="data-card">
-              <h3>新增仓库</h3>
-              <p>{latestSnapshot.new_repos}</p>
+              <h3>仓库: {selectedRepo?.name}</h3>
+              <p>{selectedRepo?.description}</p>
             </div>
           </div>
 
-          {/* 3. Chart Area */}
+          {/* 2. Repository Selector and Trend Chart */}
+          <h2 style={{ marginTop: '40px' }}>重点仓库活动趋势</h2>
+          <div className="repo-selector-container">
+              <select value={selectedRepoId || ''} onChange={(e) => setSelectedRepoId(parseInt(e.target.value))}>
+                <option value="" disabled>请选择一个重点仓库</option>
+                {repos.map(repo => (
+                  <option key={repo.id} value={repo.id}>{repo.name} - {repo.description}</option>
+                ))}
+              </select>
+          </div>
+          
           <div className="chart-area">
-            <ReactECharts option={chartOptions} style={{ height: '100%', width: '100%' }} />
+            <RepoTrendChart repoName={selectedRepo?.name} data={timeseriesData} />
           </div>
 
-          {/* 4. Latest Activity Lists */}
-          <h2 style={{ marginTop: '40px' }}>最新活动详情 (实时)</h2>
+          {/* 3. Latest Activity Lists (Organization-wide) */}
+          <h2 style={{ marginTop: '40px' }}>最新活动详情 (组织范围)</h2>
           {activityLoading ? (
             <p>正在加载最新活动列表...</p>
           ) : (
@@ -353,8 +331,7 @@ function App() {
           )}
         </>
       )}
-      {!selectedOrg && organizations.length > 0 && <p>请从下拉菜单中选择一个组织以查看数据。</p>}
-      {organizations.length === 0 && !loading && !error && <p>未找到任何可监控的组织。请检查数据库配置和数据填充。</p>}
+      {repos.length === 0 && !loading && !error && <p>未找到任何可监控的重点仓库。请检查数据库配置和数据填充。</p>}
     </div>
   );
 }

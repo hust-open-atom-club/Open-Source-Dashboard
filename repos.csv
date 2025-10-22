@@ -1,0 +1,77 @@
+仓库名称,技术小组
+hust-mirrors,镜像站运维 SIG
+hustmirror-cli,镜像站运维 SIG
+hustmirror-cli-archive,镜像站运维 SIG
+hustmirror-cli-pypi,镜像站运维 SIG
+mirrorrequest,镜像站运维 SIG
+hm-admin-tui,镜像站运维 SIG
+cloc-debian,镜像站运维 SIG
+upstream_tracker,镜像站运维 SIG
+tunasync,镜像站运维 SIG
+tunasync-scripts,镜像站运维 SIG
+hustsync.rs,镜像站运维 SIG
+LT,Linux内核SIG
+linux-edu-rank,Linux内核SIG
+S2VulHub,Linux内核SIG
+HUST-OS-Kernel-Contribution,Linux内核SIG
+KTestRobot,Linux内核SIG
+larkbot_v2,Linux内核SIG
+hustoa-vm,RUSTSBI SIG
+rustsbi,RUSTSBI SIG
+RISCV-ONLINE,RUSTSBI SIG
+check_trans_update,HCTT SIG
+open-source-deadlines-rn,HCTT SIG
+open-source-deadlines-openharmony,HCTT SIG
+open-source-deadline,HCTT SIG
+TranslateProject,HCTT SIG
+docs,HCTT SIG
+linux-insides-zh,HCTT SIG
+intro2oss,HCTT SIG
+intro2oss-lab,HCTT SIG
+markdown-nice-build,HCTT SIG
+OpenAtomClub,HCTT SIG
+hctt-scripts,HCTT SIG
+lwn2md,HCTT SIG
+x86.renegeschke.de,HCTT SIG
+linuxsoftwarelist,HCTT SIG
+dojo_auto_compilation,Dojo SIG
+Kernel_Dojo_X64,Dojo SIG
+git-dojo,Dojo SIG
+Repo2Kook,Dojo SIG
+security-training-dojo-x64,Dojo SIG
+pwn.hust.college,Dojo SIG
+example-dojo,Dojo SIG
+official-dojos,Dojo SIG
+welcome-dojo,Dojo SIG
+linux101-dojo-x64,Dojo SIG
+pwntools-dojo,Dojo SIG
+Pokemon_League_Conference_X64,Dojo SIG
+Pokemon_League_Conference_ARM64,Dojo SIG
+Pewter_Dojo_X64,Dojo SIG
+Cerulean_Dojo_X64,Dojo SIG
+Saffron_Dojo_X64,Dojo SIG
+Vermilion_Dojo_X64,Dojo SIG
+Saffron_Dojo_Arm64,Dojo SIG
+Vermilion_Dojo_Arm64,Dojo SIG
+Cerulean_Dojo_Arm64,Dojo SIG
+Pewter_Dojo_Arm64,Dojo SIG
+Celadon_Dojo_X64,Dojo SIG
+Celadon_Dojo_Arm64,Dojo SIG
+Cinnabar_Dojo_X64,Dojo SIG
+Cinnabar_Dojo_Arm64,Dojo SIG
+Viridian_Dojo_X64,Dojo SIG
+Viridian_Dojo_Arm64,Dojo SIG
+Fuchsia_Dojo_Arm64,Dojo SIG
+L3H-CTF-Club-dojo,Dojo SIG
+software-security-dojo-x64,Dojo SIG
+software-security-materials,Dojo SIG
+software-security-lab-dojo-x64,Dojo SIG
+software-security-dojo-arm64,Dojo SIG
+github-webhooks-to-kook,Dojo SIG
+giteerank,Dojo SIG
+HUST_SoftwareSecurity,Dojo SIG
+test-dojo,Dojo SIG
+OpenSift,数字基础设施维护 SIG
+logos,数字基础设施维护 SIG
+.github,数字基础设施维护 SIG
+larkapp,数字基础设施维护 SIG
