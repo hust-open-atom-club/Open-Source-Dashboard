@@ -40,6 +40,9 @@ CREATE TABLE activity_snapshots (
     closed_issues INTEGER DEFAULT 0,
     active_contributors INTEGER DEFAULT 0,
     new_repos INTEGER DEFAULT 0,
+    new_commits INTEGER DEFAULT 0,
+    lines_added INTEGER DEFAULT 0,
+    lines_deleted INTEGER DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     -- Unique constraint to prevent duplicate daily entries for the same organization
     UNIQUE (org_id, snapshot_date)

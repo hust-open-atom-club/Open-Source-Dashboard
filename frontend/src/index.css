@@ -1,263 +1,31 @@
-:root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
-
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+@import "tailwindcss";
 
 body {
   margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #111827;
+  /* gray-900 */
 }
 
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
-  width: 100%;
+/* Custom Scrollbar for Webkit */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+::-webkit-scrollbar-track {
+  background: #1f2937;
 }
 
-.card-container {
-    display: flex;
-    justify-content: space-around;
-    gap: 20px;
-    margin-bottom: 30px;
+::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 4px;
 }
 
-.data-card {
-    background-color: #333;
-    padding: 15px;
-    border-radius: 8px;
-    flex: 1;
-    min-width: 150px;
-    text-align: left;
+::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
 }
-
-.data-card h3 {
-    margin-top: 0;
-    font-size: 1em;
-    color: #aaa;
-}
-
-.data-card p {
-    font-size: 1.8em;
-    font-weight: bold;
-    margin: 0;
-    color: #646cff;
-}
-
-.chart-area {
-    width: 100%;
-    height: 500px;
-    background-color: #333;
-    border-radius: 8px;
-    padding: 20px;
-}
-
-select {
-    padding: 10px;
-    margin-bottom: 20px;
-    border-radius: 5px;
-    font-size: 1em;
-    background-color: #444;
-    color: white;
-    border: 1px solid #646cff;
-}
-
-
-/* Styles for Activity List */
-.activity-lists-wrapper {
-    display: flex;
-    gap: 20px;
-    margin-top: 20px;
-    text-align: left;
-}
-
-.activity-list-container {
-    flex: 1;
-    background-color: #333;
-    padding: 20px;
-    border-radius: 8px;
-}
-
-.activity-list-container h3 {
-    color: #646cff;
-    border-bottom: 1px solid #444;
-    padding-bottom: 10px;
-    margin-top: 0;
-}
-
-.activity-list {
-    list-style: none;
-    padding: 0;
-}
-
-.activity-item {
-    margin-bottom: 15px;
-    padding-bottom: 10px;
-    border-bottom: 1px dotted #444;
-}
-
-.activity-item a {
-    color: #fff;
-    text-decoration: none;
-    font-weight: bold;
-    display: block;
-    margin-bottom: 5px;
-}
-
-.activity-item a:hover {
-    color: #646cff;
-}
-
-.activity-meta {
-    font-size: 0.8em;
-    color: #aaa;
-}
-
-.repo-name {
-    margin-right: 10px;
-}
-
-.author {
-    margin-right: 10px;
-}
-
-.state {
-    padding: 2px 6px;
-    border-radius: 3px;
-    font-weight: bold;
-    text-transform: uppercase;
-    font-size: 0.7em;
-}
-
-.state-open {
-    background-color: #28a745; /* Green */
-    color: white;
-}
-
-.state-closed {
-    background-color: #dc3545; /* Red */
-    color: white;
-}
-
-
-/* Styles for Pagination */
-.pagination-controls {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin: 10px 0;
-    padding: 5px 0;
-    border-top: 1px solid #444;
-    border-bottom: 1px solid #444;
-    font-size: 0.9em;
-    color: #ccc;
-}
-
-.pagination-controls button {
-    background-color: #444;
-    color: #fff;
-    border: 1px solid #646cff;
-    padding: 5px 10px;
-    cursor: pointer;
-    border-radius: 4px;
-    transition: background-color 0.2s;
-}
-
-.pagination-controls button:hover:not(:disabled) {
-    background-color: #646cff;
-}
-
-.pagination-controls button:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-}
-
-.page-info {
-    margin: 0 15px;
-    font-weight: bold;
-    color: #646cff;
-}
-
-
-/* New styles for Repo-focused dashboard */
-.repo-selector-container {
-    margin-bottom: 20px;
-    text-align: left;
-    width: 100%;
-}
-
-.repo-selector-container select {
-    width: 100%;
-    max-width: 800px;
-}
-
-.repo-chart-card {
-    background-color: #333;
-    border-radius: 8px;
-    padding: 10px;
-    margin-bottom: 20px;
-    height: 320px; /* Fixed height for consistent chart display */
-}
-
-.chart-area {
-    /* Remove fixed height from previous chart-area style */
-    height: auto;
-    padding: 0;
-    background-color: transparent;
-}
-
-
-
-/* Additional styles for SIG-focused dashboard */
-
-.sig-selector-container {
-    margin-bottom: 20px;
-    text-align: left;
-    width: 100%;
-}
-
-.sig-selector-container select {
-    width: 100%;
-    max-width: 800px;
-}
-
-.sig-chart-card {
-    background-color: #333;
-    border-radius: 8px;
-    padding: 10px;
-    margin-bottom: 20px;
-    height: 420px; /* Increased height for 7 series chart */
-}
-
-/* New styles for Commit data cards */
-.commit-card p {
-    color: #9C27B0; /* Purple color for commit stats */
-}
-
-/* Adjust card container for more cards */
-.card-container {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 15px;
-    margin-bottom: 30px;
-}
-

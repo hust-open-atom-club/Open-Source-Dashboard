@@ -1,1 +1,5 @@
 node_modules/
+.env
+exports/
+repos/
+*.log
