@@ -20,6 +20,13 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_API_BASE = 'https://api.github.com';
 const REPO_STORAGE_PATH = path.join(__dirname, '..', 'repos');
 const ORG_NAME = 'hust-open-atom-club';
+const isEnvEnabled = (value) => ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
+const ENABLE_STARTUP_CACHE_FLUSH = isEnvEnabled(process.env.ENABLE_STARTUP_CACHE_FLUSH);
+const ENABLE_STARTUP_BACKFILL = isEnvEnabled(process.env.ENABLE_STARTUP_BACKFILL);
+const parsedStartupBackfillDays = parseInt(process.env.STARTUP_BACKFILL_DAYS || '30', 10);
+const STARTUP_BACKFILL_DAYS = Number.isInteger(parsedStartupBackfillDays) && parsedStartupBackfillDays > 0
+    ? parsedStartupBackfillDays
+    : 30;
 
 // --- Utility Functions ---
 
@@ -3508,30 +3515,35 @@ app.listen(PORT, '0.0.0.0', async () => {
         console.error('Error creating repo storage path:', e.message);
     }
 
-    // Clear Redis cache on startup
-    try {
-        await redisClient.flushAll();
-        console.log('Redis cache cleared on startup.');
-    } catch (e) {
-        console.error('Failed to clear Redis cache:', e.message);
+    if (ENABLE_STARTUP_CACHE_FLUSH) {
+        try {
+            await redisClient.flushAll();
+            console.log('Redis cache cleared on startup.');
+        } catch (e) {
+            console.error('Failed to clear Redis cache:', e.message);
+        }
+    } else {
+        console.log('Skipping Redis cache flush on startup. Set ENABLE_STARTUP_CACHE_FLUSH=true to enable it.');
     }
 
-    // 直接从30天前开始采集到今天的数据
-    try {
-        const DAYS_TO_COLLECT = 30;
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const startDate = new Date(today);
-        startDate.setDate(today.getDate() - DAYS_TO_COLLECT);
+    if (ENABLE_STARTUP_BACKFILL) {
+        try {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const startDate = new Date(today);
+            startDate.setDate(today.getDate() - STARTUP_BACKFILL_DAYS);
 
-        console.log('========================================');
-        console.log('开始数据采集任务');
-        console.log('========================================');
-        console.log(`📅 采集范围: ${formatDate(startDate)} 到 ${formatDate(today)} (${DAYS_TO_COLLECT + 1} 天)`);
-        console.log('========================================\n');
+            console.log('========================================');
+            console.log('开始数据采集任务');
+            console.log('========================================');
+            console.log(`📅 采集范围: ${formatDate(startDate)} 到 ${formatDate(today)} (${STARTUP_BACKFILL_DAYS + 1} 天)`);
+            console.log('========================================\n');
 
-        await runBackfillJob(DAYS_TO_COLLECT);
-    } catch (e) {
-        console.error('Startup error:', e.message);
+            await runBackfillJob(STARTUP_BACKFILL_DAYS);
+        } catch (e) {
+            console.error('Startup backfill error:', e.message);
+        }
+    } else {
+        console.log('Skipping startup backfill. Set ENABLE_STARTUP_BACKFILL=true to enable it.');
     }
 });
