@@ -4,8 +4,9 @@
  * 使用 GraphQL API 高效回填历史数据。
  * 相比 REST API 可以提升约 100 倍性能。
  * 
- * 用法: node run_graphql_backfill.js [days]
+ * 用法: node run_graphql_backfill.js [days] [--flush-cache]
  * 例如: node run_graphql_backfill.js 365
+ * 例如: node run_graphql_backfill.js 30 --flush-cache
  */
 
 require('dotenv').config();
@@ -19,6 +20,7 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const ORG_NAME = 'hust-open-atom-club';
 const PROGRESS_FILE = path.join(__dirname, 'backfill_progress.json');
+const SHOULD_FLUSH_CACHE = process.argv.includes('--flush-cache');
 
 // --- Optimized Concurrency Settings ---
 const GRAPHQL_CONCURRENCY_LIMIT = 5;  // GraphQL requests (rate limited)
@@ -954,10 +956,13 @@ async function runGraphQLBackfill(days = 30) {
 
         console.log('=== PHASE 3 Complete ===\n');
 
-        // Clear cache
-        console.log('--- Clearing Redis Cache ---');
-        await redisClient.flushAll();
-        console.log('✅ Redis cache cleared.');
+        if (SHOULD_FLUSH_CACHE) {
+            console.log('--- Clearing Redis Cache ---');
+            await redisClient.flushAll();
+            console.log('✅ Redis cache cleared.');
+        } else {
+            console.log('Skipping Redis cache flush. Pass --flush-cache to enable it.');
+        }
 
         // Display contributor statistics
         console.log('\n=== Contributor Statistics ===');
