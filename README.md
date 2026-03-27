@@ -102,6 +102,16 @@ npm start
 
 需要在 `backend/.env` 中配置数据库、Redis 与 GitHub Token。
 
+默认情况下，后端服务启动时不会自动清空 Redis，也不会自动执行历史数据回填。
+
+如需启用这些启动行为，可在 `backend/.env` 中显式配置：
+
+```env
+ENABLE_STARTUP_CACHE_FLUSH=true
+ENABLE_STARTUP_BACKFILL=true
+STARTUP_BACKFILL_DAYS=30
+```
+
 ### 3. 启动前端
 
 ```bash
@@ -181,7 +191,11 @@ npm run lint
 
 注意：
 
-- 首次启动后端时，当前实现会自动触发历史数据回填
+- 默认情况下，服务启动时不会自动触发历史数据回填
+- 如需在启动时自动回填，可通过环境变量 `ENABLE_STARTUP_BACKFILL=true` 显式开启
+- 可通过 `STARTUP_BACKFILL_DAYS` 控制启动回填天数，默认值为 `30`
+- 默认情况下，服务启动时不会自动清空 Redis
+- 如需在启动时清空 Redis，可通过环境变量 `ENABLE_STARTUP_CACHE_FLUSH=true` 显式开启
 - 数据回填可能持续较长时间，取决于仓库数量与 GitHub API 限流情况
 - 在共享环境中操作缓存和回填脚本前，建议先确认影响范围
 
