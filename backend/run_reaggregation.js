@@ -1,9 +1,18 @@
+/**
+ * Re-aggregation Script
+ *
+ * Usage: node run_reaggregation.js [--flush-cache]
+ * Example: node run_reaggregation.js
+ * Example: node run_reaggregation.js --flush-cache
+ */
+
 // A one-time script to re-aggregate all historical data from the corrected raw snapshots.
 require('dotenv').config();
 const { Pool } = require('pg');
 const Redis = require('redis');
 
 const ORG_NAME = 'hust-open-atom-club';
+const SHOULD_FLUSH_CACHE = process.argv.includes('--flush-cache');
 
 // --- DB and Redis Connections (from index.js) ---
 const pool = new Pool({
@@ -98,14 +107,18 @@ async function runFullReaggregation(days = 30) {
         await aggregateOrganizationSnapshot(org.id, targetDate);
     }
 
-    console.log('\n--- Clearing Redis Cache ---');
-    await redisClient.connect();
-    await redisClient.flushAll();
-    console.log('✅ Redis cache cleared.');
+    if (SHOULD_FLUSH_CACHE) {
+        console.log('\n--- Clearing Redis Cache ---');
+        await redisClient.connect();
+        await redisClient.flushAll();
+        console.log('✅ Redis cache cleared.');
+        await redisClient.quit();
+    } else {
+        console.log('\nSkipping Redis cache flush. Pass --flush-cache to enable it.');
+    }
 
     console.log('\n--- [FINISH] Re-aggregation Complete ---');
     await pool.end();
-    await redisClient.quit();
 }
 
 runFullReaggregation(365).catch(console.error);
