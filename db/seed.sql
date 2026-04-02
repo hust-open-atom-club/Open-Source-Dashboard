@@ -1,3 +1,6 @@
+\encoding UTF8
+SET client_encoding = 'UTF8';
+
 -- 1. Insert the single monitored organization
 INSERT INTO organizations (name) VALUES
 ('hust-open-atom-club')
@@ -117,5 +120,4 @@ INSERT INTO repositories (org_id, sig_id, name) VALUES
 -- Clean up helper functions
 DROP FUNCTION get_org_id();
 DROP FUNCTION get_sig_id(sig_name VARCHAR);
-
 

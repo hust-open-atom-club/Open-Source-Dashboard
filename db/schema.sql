@@ -1,3 +1,6 @@
+\encoding UTF8
+SET client_encoding = 'UTF8';
+
 -- Table: organizations
 -- 组织表 (现在只用于存储 hust-open-atom-club)
 CREATE TABLE organizations (

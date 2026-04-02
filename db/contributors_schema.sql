@@ -1,3 +1,6 @@
+\encoding UTF8
+SET client_encoding = 'UTF8';
+
 -- 贡献者追踪系统数据库表
 -- 执行: psql -d oss_dashboard -f db/contributors_schema.sql
 
@@ -81,4 +84,3 @@ COMMENT ON COLUMN contributors.github_username IS 'GitHub 用户名';
 COMMENT ON COLUMN contributors.github_id IS 'GitHub 用户 ID（数字）';
 COMMENT ON COLUMN contributors.first_seen_date IS '首次出现在系统中的日期';
 COMMENT ON COLUMN contributors.last_seen_date IS '最后一次活跃的日期';
-
