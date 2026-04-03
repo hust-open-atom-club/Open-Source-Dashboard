@@ -1568,7 +1568,7 @@ app.get('/api/v1/organization/timeseries', async (req, res) => {
         let { startDateStr } = parseRange(range);
 
         const result = await pool.query(
-            `SELECT snapshot_date, new_prs, closed_merged_prs, new_issues, closed_issues, active_contributors, new_commits, lines_added, lines_deleted
+            `SELECT snapshot_date, new_prs, closed_merged_prs, new_issues, closed_issues, active_contributors, new_repos, new_commits, lines_added, lines_deleted
              FROM activity_snapshots
              WHERE org_id = $1 AND snapshot_date >= $2
              ORDER BY snapshot_date ASC`,
@@ -1582,6 +1582,7 @@ app.get('/api/v1/organization/timeseries', async (req, res) => {
             new_issues: row.new_issues,
             closed_issues: row.closed_issues,
             active_contributors: row.active_contributors,
+            new_repos: row.new_repos,
             new_commits: row.new_commits,
             lines_added: row.lines_added,
             lines_deleted: row.lines_deleted,
@@ -1825,81 +1826,6 @@ app.get('/api/v1/sig/:sigId/timeseries/api', async (req, res) => {
         res.json(responseData);
     } catch (error) {
         console.error(`Error fetching API timeseries for SIG ${sigId}:`, error.message);
-        res.status(500).json({ error: 'Internal Server Error' });
-    }
-});
-
-// GET /api/v1/organization/timeseries - Now for the single monitored org
-app.get('/api/v1/organization/timeseries', async (req, res) => {
-    const range = req.query.range || '30d'; // Default to 30 days
-    const cacheKey = `org:${ORG_NAME}:range:${range}`;
-    const cacheTTL = 60 * 10; // 10 minutes
-
-    try {
-        const org = await getMonitoredOrg();
-        if (!org) {
-            return res.status(404).json({ error: 'Monitored organization not found.' });
-        }
-
-        // 2. Caching Logic: Check Redis
-        const cachedData = await redisClient.get(cacheKey);
-        if (cachedData) {
-            console.log(`Cache hit for ${cacheKey}`);
-            return res.json(JSON.parse(cachedData));
-        }
-        console.log(`Cache miss for ${cacheKey}. Querying DB...`);
-
-        // 3. Query Database
-        let days;
-        if (range.endsWith('d')) {
-            days = parseInt(range.slice(0, -1), 10);
-        } else {
-            days = 30; // Fallback
-        }
-
-        const startDate = new Date();
-        startDate.setDate(startDate.getDate() - days);
-        const startDateStr = formatDate(startDate);
-
-        const dataResult = await pool.query(
-            `SELECT 
-        snapshot_date, 
-        new_prs, 
-        closed_merged_prs, 
-        new_issues, 
-        closed_issues, 
-        active_contributors, 
-        new_repos,
-        new_commits,
-        lines_added,
-        lines_deleted
-     FROM activity_snapshots
-     WHERE org_id = $1 AND snapshot_date::date >= $2::date
-     ORDER BY snapshot_date ASC`,
-            [org.id, startDateStr]
-        );
-
-        const timeseriesData = dataResult.rows.map(row => ({
-            date: formatDate(row.snapshot_date),
-            new_prs: row.new_prs,
-            closed_merged_prs: row.closed_merged_prs,
-            new_issues: row.new_issues,
-            closed_issues: row.closed_issues,
-            active_contributors: row.active_contributors,
-            new_repos: row.new_repos,
-            new_commits: row.new_commits,
-            lines_added: row.lines_added,
-            lines_deleted: row.lines_deleted,
-        }));
-
-        // 4. Store in Redis and return
-        await redisClient.setEx(cacheKey, cacheTTL, JSON.stringify(timeseriesData));
-        console.log(`Data stored in cache for ${cacheKey}.`);
-
-        res.json(timeseriesData);
-
-    } catch (error) {
-        console.error(`Error fetching timeseries data for organization:`, error.message);
         res.status(500).json({ error: 'Internal Server Error' });
     }
 });
