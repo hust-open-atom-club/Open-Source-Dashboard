@@ -48,6 +48,7 @@ oss-dashboard/
 ├── backend/                    # Node.js/Express 后端服务
 │   ├── server.js               # 主服务器文件
 │   ├── run_graphql_backfill.js # 数据回填脚本
+│   ├── backfill_date_range.js  # 按单日/日期范围定点回填脚本
 │   ├── run_reaggregation.js    # 重聚合脚本
 │   └── .env.example            # 环境变量示例
 ├── frontend/                   # React/Vite 前端应用
@@ -102,16 +103,6 @@ npm start
 
 需要在 `backend/.env` 中配置数据库、Redis 与 GitHub Token。
 
-默认情况下，后端服务启动时不会自动清空 Redis，也不会自动执行历史数据回填。
-
-如需启用这些启动行为，可在 `backend/.env` 中显式配置：
-
-```env
-ENABLE_STARTUP_CACHE_FLUSH=true
-ENABLE_STARTUP_BACKFILL=true
-STARTUP_BACKFILL_DAYS=30
-```
-
 ### 3. 启动前端
 
 ```bash
@@ -132,7 +123,11 @@ npm install
 npm start
 node run_graphql_backfill.js 30
 node run_graphql_backfill.js 30 --flush-cache
+node backfill_date_range.js --date 2026-03-12
+node backfill_date_range.js --start-date 2026-03-12 --end-date 2026-03-14
+node backfill_date_range.js --date 2026-03-31 --reset-existing --flush-cache
 node run_reaggregation.js
+node run_reaggregation.js --flush-cache
 node backfill_single_repo.js <repo-name>
 ```
 
@@ -188,18 +183,21 @@ npm run lint
 
 - **自动更新**：后端服务默认每 6 小时自动采集一次新数据
 - **手动回填**：使用 `backend/run_graphql_backfill.js`
+- **定点回填**：使用 `backend/backfill_date_range.js` 按单天或自定义日期范围修复数据
 - **重聚合**：使用 `backend/run_reaggregation.js`
 
 注意：
 
-- 默认情况下，服务启动时不会自动触发历史数据回填
-- 如需在启动时自动回填，可通过环境变量 `ENABLE_STARTUP_BACKFILL=true` 显式开启
-- 可通过 `STARTUP_BACKFILL_DAYS` 控制启动回填天数，默认值为 `30`
-- 默认情况下，服务启动时不会自动清空 Redis
-- 如需在启动时清空 Redis，可通过环境变量 `ENABLE_STARTUP_CACHE_FLUSH=true` 显式开启
 - 默认情况下，`backend/run_graphql_backfill.js` 在回填结束后不会自动清空 Redis
 - 如需在回填完成后清空 Redis，可显式传入 `--flush-cache`
 - 示例：`node run_graphql_backfill.js 30 --flush-cache`
+- `backend/backfill_date_range.js` 支持 `--date YYYY-MM-DD` 和 `--start-date YYYY-MM-DD --end-date YYYY-MM-DD`
+- 如需在定点回填前先删除目标日期范围内已有数据，可追加 `--reset-existing`
+- 如需在定点回填完成后同步清空 Redis，可追加 `--flush-cache`
+- 示例：`node backfill_date_range.js --date 2026-03-31 --reset-existing --flush-cache`
+- 默认情况下，`backend/run_reaggregation.js` 在重聚合结束后不会自动清空 Redis
+- 如需在重聚合完成后清空 Redis，可显式传入 `--flush-cache`
+- 示例：`node run_reaggregation.js --flush-cache`
 - 数据回填可能持续较长时间，取决于仓库数量与 GitHub API 限流情况
 - 在共享环境中操作缓存和回填脚本前，建议先确认影响范围
 
@@ -238,9 +236,18 @@ cd backend
 node run_graphql_backfill.js 30 --flush-cache
 ```
 
+如果只有少数日期异常，优先使用定点回填脚本：
+
+```bash
+cd backend
+node backfill_date_range.js --date 2026-03-12 --reset-existing
+node backfill_date_range.js --start-date 2026-03-12 --end-date 2026-03-14 --reset-existing --flush-cache
+```
+
 ### 遇到 GitHub API 限流
 
 - 等待额度恢复后重试
+- 如果只需要修复少数异常日期，优先使用 `backfill_date_range.js` 缩小回填范围
 - 适当减少回填天数，例如：
 
 ```bash
