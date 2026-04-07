@@ -4,8 +4,9 @@
  * 使用 GraphQL API 高效回填历史数据。
  * 相比 REST API 可以提升约 100 倍性能。
  * 
- * 用法: node run_graphql_backfill.js [days]
+ * 用法: node run_graphql_backfill.js [days] [--flush-cache]
  * 例如: node run_graphql_backfill.js 365
+ * 例如: node run_graphql_backfill.js 30 --flush-cache
  */
 
 require('dotenv').config();
@@ -986,6 +987,8 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
             console.log('--- Clearing Redis Cache ---');
             await redisClient.flushAll();
             console.log('✅ Redis cache cleared.');
+        } else {
+            console.log('Skipping Redis cache flush. Pass --flush-cache to enable it.');
         }
 
         // Display contributor statistics
@@ -1044,14 +1047,18 @@ async function runGraphQLBackfill(days = 30, options = {}) {
         endDate,
         progressFile: options.progressFile || PROGRESS_FILE,
         description: `${days} days of data`,
-        flushCache: options.flushCache !== undefined ? options.flushCache : true,
+        flushCache: options.flushCache !== undefined ? options.flushCache : false,
     });
 }
 
 // --- Run ---
 if (require.main === module) {
-    const days = parseInt(process.argv[2], 10) || 730;
-    runGraphQLBackfill(days).catch((error) => {
+    const args = process.argv.slice(2);
+    const flushCache = args.includes('--flush-cache');
+    const daysArg = args.find((arg) => /^\d+$/.test(arg));
+    const days = daysArg ? parseInt(daysArg, 10) : 730;
+
+    runGraphQLBackfill(days, { flushCache }).catch((error) => {
         console.error(error);
         process.exitCode = 1;
     });
