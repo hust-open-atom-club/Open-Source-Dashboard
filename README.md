@@ -131,6 +131,7 @@ cd backend
 npm install
 npm start
 node run_graphql_backfill.js 30
+node run_graphql_backfill.js 30 --flush-cache
 node run_reaggregation.js
 node backfill_single_repo.js <repo-name>
 ```
@@ -196,6 +197,9 @@ npm run lint
 - 可通过 `STARTUP_BACKFILL_DAYS` 控制启动回填天数，默认值为 `30`
 - 默认情况下，服务启动时不会自动清空 Redis
 - 如需在启动时清空 Redis，可通过环境变量 `ENABLE_STARTUP_CACHE_FLUSH=true` 显式开启
+- 默认情况下，`backend/run_graphql_backfill.js` 在回填结束后不会自动清空 Redis
+- 如需在回填完成后清空 Redis，可显式传入 `--flush-cache`
+- 示例：`node run_graphql_backfill.js 30 --flush-cache`
 - 数据回填可能持续较长时间，取决于仓库数量与 GitHub API 限流情况
 - 在共享环境中操作缓存和回填脚本前，建议先确认影响范围
 
@@ -225,6 +229,13 @@ psql -d oss_dashboard -c "\dt contributors"
 ```bash
 cd backend
 node run_graphql_backfill.js 30
+```
+
+如需在回填结束后同步清空 Redis，可改用：
+
+```bash
+cd backend
+node run_graphql_backfill.js 30 --flush-cache
 ```
 
 ### 遇到 GitHub API 限流
