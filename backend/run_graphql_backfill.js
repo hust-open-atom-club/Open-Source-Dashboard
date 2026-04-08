@@ -20,7 +20,6 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const ORG_NAME = 'hust-open-atom-club';
 const PROGRESS_FILE = path.join(__dirname, 'backfill_progress.json');
-const SHOULD_FLUSH_CACHE = process.argv.includes('--flush-cache');
 
 // --- Optimized Concurrency Settings ---
 const GRAPHQL_CONCURRENCY_LIMIT = 5;  // GraphQL requests (rate limited)
@@ -55,6 +54,34 @@ const formatDate = (date) => {
     const day = date.getDate().toString().padStart(2, '0');
     return `${year}-${month}-${day}`;
 };
+
+function normalizeDate(date) {
+    const normalized = new Date(date);
+    normalized.setHours(0, 0, 0, 0);
+    return normalized;
+}
+
+function buildDateList(startDate, endDate) {
+    const allDates = [];
+    const currentDate = normalizeDate(startDate);
+    const lastDate = normalizeDate(endDate);
+
+    while (currentDate <= lastDate) {
+        allDates.push(new Date(currentDate));
+        currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    return allDates;
+}
+
+function getScopedProgressFile(startDate, endDate) {
+    const startDateStr = formatDate(startDate);
+    const endDateStr = formatDate(endDate);
+    const fileName = startDateStr === endDateStr
+        ? `backfill_progress_${startDateStr}.json`
+        : `backfill_progress_${startDateStr}_${endDateStr}.json`;
+    return path.join(__dirname, fileName);
+}
 
 // --- GraphQL API with Adaptive Rate Limiting ---
 async function githubGraphQL(query, variables = {}) {
@@ -724,22 +751,22 @@ async function runPromisesWithConcurrency(tasks, concurrency) {
 }
 
 // --- Progress Checkpoint Functions ---
-async function loadProgress() {
+async function loadProgress(progressFile = PROGRESS_FILE) {
     try {
-        const data = await fs.readFile(PROGRESS_FILE, 'utf8');
+        const data = await fs.readFile(progressFile, 'utf8');
         return JSON.parse(data);
     } catch {
         return { completedRepos: {}, gitCompleted: false, graphqlCompleted: false };
     }
 }
 
-async function saveProgress(progress) {
-    await fs.writeFile(PROGRESS_FILE, JSON.stringify(progress, null, 2));
+async function saveProgress(progress, progressFile = PROGRESS_FILE) {
+    await fs.writeFile(progressFile, JSON.stringify(progress, null, 2));
 }
 
-async function clearProgress() {
+async function clearProgress(progressFile = PROGRESS_FILE) {
     try {
-        await fs.unlink(PROGRESS_FILE);
+        await fs.unlink(progressFile);
     } catch {
         // File doesn't exist, that's fine
     }
@@ -761,17 +788,33 @@ function formatElapsedTime(startTime) {
 
 
 // --- Main Backfill Function (Optimized) ---
-async function runGraphQLBackfill(days = 30) {
+async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = PROGRESS_FILE, description, flushCache = false }) {
+    const normalizedStartDate = normalizeDate(startDate);
+    const normalizedEndDate = normalizeDate(endDate);
+
+    if (Number.isNaN(normalizedStartDate.getTime()) || Number.isNaN(normalizedEndDate.getTime())) {
+        throw new Error('Invalid date range for GraphQL backfill.');
+    }
+
+    if (normalizedStartDate > normalizedEndDate) {
+        throw new Error('startDate cannot be later than endDate.');
+    }
+
+    const allDates = buildDateList(normalizedStartDate, normalizedEndDate);
+    const runDescription = description || `${formatDate(normalizedStartDate)} to ${formatDate(normalizedEndDate)}`;
+
     console.log(`\n${'='.repeat(60)}`);
     console.log(`--- Starting Optimized GraphQL Backfill Job ---`);
-    console.log(`--- Processing ${days} days of data ---`);
+    console.log(`--- Processing ${runDescription} ---`);
     console.log(`${'='.repeat(60)}\n`);
 
     const startTime = Date.now();
-    let progress = await loadProgress();
+    let progress = await loadProgress(progressFile);
 
     try {
-        await redisClient.connect();
+        if (flushCache) {
+            await redisClient.connect();
+        }
 
         const orgsResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
         const org = orgsResult.rows[0];
@@ -791,29 +834,13 @@ async function runGraphQLBackfill(days = 30) {
         const sigsResult = await pool.query('SELECT id, name FROM special_interest_groups WHERE org_id = $1', [org.id]);
         const sigs = sigsResult.rows;
 
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        const startDate = new Date(today);
-        startDate.setDate(today.getDate() - days);
-
-        const endDate = new Date(today);
-        endDate.setDate(today.getDate() - 1);
-
-        console.log(`📅 Date range: ${formatDate(startDate)} to ${formatDate(endDate)}`);
+        console.log(`📅 Date range: ${formatDate(normalizedStartDate)} to ${formatDate(normalizedEndDate)}`);
         console.log(`📦 Repositories: ${repositories.length}`);
         console.log(`🏷️  SIGs: ${sigs.length}`);
+        console.log(`🗂️  Progress file: ${path.basename(progressFile)}`);
         console.log(`⚡ Commit Concurrency: ${COMMIT_CONCURRENCY_LIMIT}`);
         console.log(`⚡ GraphQL Concurrency: ${GRAPHQL_CONCURRENCY_LIMIT}`);
         console.log(`⏱️  Base delay: ${BASE_DELAY_MS}ms\n`);
-
-        // Build list of all dates
-        const allDates = [];
-        for (let i = days; i >= 1; i--) {
-            const targetDate = new Date(today);
-            targetDate.setDate(today.getDate() - i);
-            allDates.push(targetDate);
-        }
 
         // === PHASE 1 & 2: Run Git and GraphQL in parallel ===
         console.log('=== PHASE 1 & 2: Git + GraphQL (Parallel) ===\n');
@@ -847,7 +874,7 @@ async function runGraphQLBackfill(days = 30) {
             }
             graphqlTasks.push(async () => {
                 try {
-                    const { statsMap, contributorDetailsMap } = await fetchRepoStatsViaGraphQL(repo.name, startDate, endDate);
+                    const { statsMap, contributorDetailsMap } = await fetchRepoStatsViaGraphQL(repo.name, normalizedStartDate, normalizedEndDate);
 
                     for (const [dateStr, stats] of statsMap) {
                         const contributorDetails = contributorDetailsMap.has(dateStr)
@@ -857,7 +884,7 @@ async function runGraphQLBackfill(days = 30) {
                     }
 
                     progress.completedRepos[taskKey] = true;
-                    await saveProgress(progress);
+                    await saveProgress(progress, progressFile);
                     console.log(`[GraphQL] ${repo.name}: ✅ ${statsMap.size} days (${formatElapsedTime(startTime)}, Rate limit: ${rateLimitRemaining})`);
                 } catch (error) {
                     console.error(`[GraphQL] ${repo.name}: ❌ ${error.message}`);
@@ -876,7 +903,7 @@ async function runGraphQLBackfill(days = 30) {
                 for (let i = 0; i < gitTasks.length; i += batchSize) {
                     const batch = gitTasks.slice(i, i + batchSize);
                     await runPromisesWithConcurrency(batch, COMMIT_CONCURRENCY_LIMIT);
-                    await saveProgress(progress);
+                    await saveProgress(progress, progressFile);
                     const pct = Math.round(((i + batch.length) / gitTasks.length) * 100);
                     console.log(`[Git] Progress: ${pct}% (${formatElapsedTime(startTime)})`);
                 }
@@ -956,7 +983,7 @@ async function runGraphQLBackfill(days = 30) {
 
         console.log('=== PHASE 3 Complete ===\n');
 
-        if (SHOULD_FLUSH_CACHE) {
+        if (flushCache) {
             console.log('--- Clearing Redis Cache ---');
             await redisClient.flushAll();
             console.log('✅ Redis cache cleared.');
@@ -975,7 +1002,7 @@ async function runGraphQLBackfill(days = 30) {
                     SUM(cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed) as total_activities
                 FROM contributors c
                 LEFT JOIN contributor_daily_activities cda ON c.id = cda.contributor_id AND cda.snapshot_date >= $1
-            `, [formatDate(startDate)]);
+            `, [formatDate(normalizedStartDate)]);
 
             const cStats = contributorStatsResult.rows[0];
             console.log(`  - 总贡献者数: ${cStats.total_contributors || 0}`);
@@ -988,7 +1015,7 @@ async function runGraphQLBackfill(days = 30) {
         console.log('='.repeat(30) + '\n');
 
         // Clear progress file on success
-        await clearProgress();
+        await clearProgress(progressFile);
 
         console.log(`\n${'='.repeat(60)}`);
         console.log(`--- GraphQL Backfill Job Finished Successfully ---`);
@@ -1001,10 +1028,45 @@ async function runGraphQLBackfill(days = 30) {
         console.log('Progress saved. Run again to resume.');
     } finally {
         await pool.end();
-        await redisClient.quit();
+        if (redisClient.isOpen) {
+            await redisClient.quit();
+        }
     }
 }
 
+async function runGraphQLBackfill(days = 30, options = {}) {
+    const today = normalizeDate(new Date());
+    const startDate = new Date(today);
+    startDate.setDate(today.getDate() - days);
+
+    const endDate = new Date(today);
+    endDate.setDate(today.getDate() - 1);
+
+    return runGraphQLBackfillForRange({
+        startDate,
+        endDate,
+        progressFile: options.progressFile || PROGRESS_FILE,
+        description: `${days} days of data`,
+        flushCache: options.flushCache !== undefined ? options.flushCache : false,
+    });
+}
+
 // --- Run ---
-const days = parseInt(process.argv[2], 10) || 730;
-runGraphQLBackfill(days);
+if (require.main === module) {
+    const args = process.argv.slice(2);
+    const flushCache = args.includes('--flush-cache');
+    const daysArg = args.find((arg) => /^\d+$/.test(arg));
+    const days = daysArg ? parseInt(daysArg, 10) : 730;
+
+    runGraphQLBackfill(days, { flushCache }).catch((error) => {
+        console.error(error);
+        process.exitCode = 1;
+    });
+}
+
+module.exports = {
+    runGraphQLBackfill,
+    runGraphQLBackfillForRange,
+    formatDate,
+    getScopedProgressFile,
+};
