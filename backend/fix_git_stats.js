@@ -1,9 +1,11 @@
 // A one-time script to correct historical git stats without re-running API calls.
-const { exec } = require('child_process');
-const { promisify } = require('util');
-const execPromise = promisify(exec);
 const fs = require('fs/promises');
 const path = require('path');
+const {
+    cloneOrPullRepoSecure,
+    redactSecrets,
+    runGit,
+} = require('./git_secure');
 
 require('dotenv').config();
 const { Pool } = require('pg');
@@ -35,21 +37,19 @@ const formatDate = (date) => {
 };
 
 async function cloneOrPullRepo(repoName) {
-    // 这个函数直接从 index.js 复制过来，无需修改
     const repoPath = path.join(REPO_STORAGE_PATH, repoName);
-    const repoUrl = `https://${process.env.GITHUB_TOKEN}@github.com/${ORG_NAME}/${repoName}.git`;
+
     try {
-        const repoExists = await fs.access(repoPath).then(() => true).catch(() => false);
-        if (repoExists) {
-            await execPromise(`git -C "${repoPath}" pull --ff-only`, { timeout: 60000 });
-        } else {
-            await execPromise(`git clone ${repoUrl} ${repoPath}`, { timeout: 120000 });
-        }
+        return await cloneOrPullRepoSecure({
+            repoName,
+            repoStoragePath: REPO_STORAGE_PATH,
+            orgName: ORG_NAME,
+        });
     } catch (error) {
-        console.error(`${repoName}: operate failed: ${error.message}`);
+        console.error(`${repoName}: operate failed\n${redactSecrets(error.message)}`);
         await fs.mkdir(repoPath, { recursive: true }).catch(() => {});
+        return repoPath;
     }
-    return repoPath;
 }
 
 /**
@@ -66,9 +66,16 @@ async function getCommitStats(repoName, targetDate) {
     endDate.setHours(0, 0, 0, 0);
     const endISO = formatDate(endDate);
     const startISO = formatDate(startDate);
-    const command = `git -C "${repoPath}" log --since="${startISO}" --until="${endISO}" --pretty=format:"COMMIT_SEPARATOR%an" --numstat`;
     try {
-        const { stdout } = await execPromise(command, { maxBuffer: 1024 * 1024 * 10 });
+        const { stdout } = await runGit([
+            '-C',
+            repoPath,
+            'log',
+            `--since=${startISO}`,
+            `--until=${endISO}`,
+            '--pretty=format:COMMIT_SEPARATOR%an',
+            '--numstat',
+        ], { maxBuffer: 1024 * 1024 * 10 });
         if (!stdout.trim()) {
             return { new_commits: 0, lines_added: 0, lines_deleted: 0 };
         }
@@ -95,7 +102,7 @@ async function getCommitStats(repoName, targetDate) {
         }
         return { new_commits: newCommits, lines_added: linesAdded, lines_deleted: linesDeleted };
     } catch (error) {
-        console.error(`Git command failed for ${repoName}:`, error.message);
+        console.error(`Git command failed for ${repoName}\n${redactSecrets(error.message)}`);
         return { new_commits: 0, lines_added: 0, lines_deleted: 0 };
     }
 }

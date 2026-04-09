@@ -2,12 +2,14 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 // 复制所有需要的工具函数
-const { exec } = require('child_process');
-const { promisify } = require('util');
-const execPromise = promisify(exec);
 const fs = require('fs/promises');
 const path = require('path');
 const axios = require('axios');
+const {
+    cloneOrPullRepoSecure,
+    redactSecrets,
+    runGit,
+} = require('./git_secure');
 
 const ORG_NAME = 'hust-open-atom-club';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -139,61 +141,19 @@ async function githubRest(endpoint, params = {}) {
  */
 async function cloneOrPullRepo(repoName) {
     const repoPath = path.join(REPO_STORAGE_PATH, repoName);
-    const repoUrl = `https://${GITHUB_TOKEN}@github.com/${ORG_NAME}/${repoName}.git`;
 
     try {
-        // 检查仓库目录是否存在
-        const repoExists = await fs.access(repoPath).then(() => true).catch(() => false);
-
-        if (repoExists) {
-            // 仓库存在，尝试 pull
-            try {
-                // 先检查是否是有效的 git 仓库
-                await execPromise(`git -C "${repoPath}" rev-parse --git-dir`, { timeout: 5000 });
-
-                // 尝试 pull，如果失败可能是空仓库或分支问题
-                try {
-                    await execPromise(`git -C "${repoPath}" pull --ff-only`, { timeout: 60000 });
-                } catch (pullError) {
-                    // 如果 pull 失败，检查是否是空仓库或分支问题
-                    const branchCheck = await execPromise(`git -C "${repoPath}" branch -r`, { timeout: 5000 }).catch(() => null);
-                    if (!branchCheck || !branchCheck.stdout.trim()) {
-                        console.warn(`${repoName}: 仓库为空或没有远程分支，跳过`);
-                        // 返回路径但标记为无效
-                        return repoPath;
-                    }
-                    // 尝试 fetch 然后 pull
-                    console.warn(`${repoName}: Pull failed, trying fetch...`);
-                    await execPromise(`git -C "${repoPath}" fetch origin`, { timeout: 60000 });
-                    await execPromise(`git -C "${repoPath}" pull --ff-only`, { timeout: 60000 });
-                }
-            } catch (gitError) {
-                // 如果不是有效的 git 仓库，删除并重新克隆
-                console.warn(`${repoName}: not availabe, trying re-clone...`);
-                await fs.rm(repoPath, { recursive: true, force: true });
-                await execPromise(`git clone ${repoUrl} ${repoPath}`, { timeout: 120000 });
-            }
-        } else {
-            // 仓库不存在，克隆
-            console.log(`Cloning repo: ${repoName}`);
-            try {
-                await execPromise(`git clone ${repoUrl} ${repoPath}`, { timeout: 120000 });
-            } catch (cloneError) {
-                // 克隆失败可能是仓库不存在或为空
-                console.error(`${repoName}: cloning failed: ${cloneError.message}`);
-                // 创建一个空目录，后续 git log 会返回空结果
-                await fs.mkdir(repoPath, { recursive: true });
-                return repoPath;
-            }
-        }
+        return await cloneOrPullRepoSecure({
+            repoName,
+            repoStoragePath: REPO_STORAGE_PATH,
+            orgName: ORG_NAME,
+        });
     } catch (error) {
-        console.error(`${repoName}: operate failed: ${error.message}`);
+        console.error(`${repoName}: operate failed\n${redactSecrets(error.message)}`);
         // 确保目录存在，即使 git 操作失败
         await fs.mkdir(repoPath, { recursive: true }).catch(() => { });
         return repoPath;
     }
-
-    return repoPath;
 }
 
 /**
@@ -213,10 +173,16 @@ async function getCommitStats(repoName, targetDate) {
     const endISO = formatDate(endDate);
     const startISO = formatDate(startDate);
 
-    const command = `git -C "${repoPath}" log --since="${startISO}" --until="${endISO}" --pretty=format:"COMMIT_SEPARATOR%an" --numstat`;
-
     try {
-        const { stdout } = await execPromise(command, { maxBuffer: 1024 * 1024 * 10 });
+        const { stdout } = await runGit([
+            '-C',
+            repoPath,
+            'log',
+            `--since=${startISO}`,
+            `--until=${endISO}`,
+            '--pretty=format:COMMIT_SEPARATOR%an',
+            '--numstat',
+        ], { maxBuffer: 1024 * 1024 * 10 });
         if (!stdout.trim()) {
             return { new_commits: 0, lines_added: 0, lines_deleted: 0, committers: new Set() };
         }
@@ -271,7 +237,7 @@ async function getCommitStats(repoName, targetDate) {
         };
 
     } catch (error) {
-        console.error(`Git command failed for ${repoName}:`, error.message);
+        console.error(`Git command failed for ${repoName}\n${redactSecrets(error.message)}`);
         return { new_commits: 0, lines_added: 0, lines_deleted: 0, committers: new Set() };
     }
 }
