@@ -427,21 +427,61 @@ async function storeRepoApiStatsForDate(repoId, repoName, dateStr, stats, contri
 }
 
 // --- Store Contributor Activities ---
+async function refreshContributorDailyActivitiesFromRepoActivities(client, orgId, dateStr, contributorIds) {
+    if (contributorIds.length === 0) return;
+
+    await client.query(
+        `INSERT INTO contributor_daily_activities
+         (contributor_id, org_id, snapshot_date, prs_opened, prs_closed, issues_opened, issues_closed, active_repos_count)
+         SELECT
+             cra.contributor_id,
+             $1,
+             $2,
+             COALESCE(SUM(cra.prs_opened), 0),
+             COALESCE(SUM(cra.prs_closed), 0),
+             COALESCE(SUM(cra.issues_opened), 0),
+             COALESCE(SUM(cra.issues_closed), 0),
+             COUNT(DISTINCT CASE
+                 WHEN cra.prs_opened > 0
+                   OR cra.prs_closed > 0
+                   OR cra.issues_opened > 0
+                   OR cra.issues_closed > 0
+                 THEN cra.repo_id
+             END)
+         FROM contributor_repo_activities cra
+         JOIN repositories r ON r.id = cra.repo_id
+         WHERE r.org_id = $1
+           AND cra.snapshot_date = $2
+           AND cra.contributor_id = ANY($3::int[])
+         GROUP BY cra.contributor_id
+         ON CONFLICT (contributor_id, org_id, snapshot_date) DO UPDATE
+         SET prs_opened = EXCLUDED.prs_opened,
+             prs_closed = EXCLUDED.prs_closed,
+             issues_opened = EXCLUDED.issues_opened,
+             issues_closed = EXCLUDED.issues_closed,
+             active_repos_count = EXCLUDED.active_repos_count`,
+        [orgId, dateStr, contributorIds]
+    );
+}
+
 async function storeContributorActivities(repoId, dateStr, contributorDetails) {
     if (contributorDetails.length === 0) return;
 
+    const client = await pool.connect();
     try {
-        const orgResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
+        await client.query('BEGIN');
+
+        const orgResult = await client.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
         if (orgResult.rows.length === 0) {
-            console.error('[Contributors] Organization not found');
-            return;
+            throw new Error('Organization not found');
         }
         const orgId = orgResult.rows[0].id;
+        const affectedContributorIds = new Set();
 
         for (const contributor of contributorDetails) {
             try {
                 // 1. 插入或更新贡献者基本信息
-                const contributorResult = await pool.query(
+                const contributorResult = await client.query(
                     `INSERT INTO contributors (github_username, github_id, avatar_url, first_seen_date, last_seen_date)
                      VALUES ($1, $2, $3, $4, $4)
                      ON CONFLICT (github_username) DO UPDATE
@@ -454,9 +494,10 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails) {
                 );
 
                 const contributorId = contributorResult.rows[0].id;
+                affectedContributorIds.add(contributorId);
 
                 // 2. 插入贡献者-仓库活动
-                await pool.query(
+                await client.query(
                     `INSERT INTO contributor_repo_activities 
                      (contributor_id, repo_id, snapshot_date, prs_opened, prs_closed, issues_opened, issues_closed)
                      VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -469,29 +510,25 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails) {
                         contributor.prs_opened, contributor.prs_closed,
                         contributor.issues_opened, contributor.issues_closed]
                 );
-
-                // 3. 更新贡献者每日活动（聚合到组织级别）
-                await pool.query(
-                    `INSERT INTO contributor_daily_activities 
-                     (contributor_id, org_id, snapshot_date, prs_opened, prs_closed, issues_opened, issues_closed, active_repos_count)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
-                     ON CONFLICT (contributor_id, org_id, snapshot_date) DO UPDATE
-                     SET prs_opened = EXCLUDED.prs_opened,
-                         prs_closed = EXCLUDED.prs_closed,
-                         issues_opened = EXCLUDED.issues_opened,
-                         issues_closed = EXCLUDED.issues_closed,
-                         active_repos_count = EXCLUDED.active_repos_count`,
-                    [contributorId, orgId, dateStr,
-                        contributor.prs_opened, contributor.prs_closed,
-                        contributor.issues_opened, contributor.issues_closed]
-                );
-
             } catch (error) {
-                console.error(`[Contributors] Error storing contributor ${contributor.username}:`, error.message);
+                throw new Error(`Error storing contributor ${contributor.username}: ${error.message}`);
             }
         }
+
+        // Rebuild org-level daily contributor stats from repo-level facts so reruns stay idempotent.
+        await refreshContributorDailyActivitiesFromRepoActivities(
+            client,
+            orgId,
+            dateStr,
+            Array.from(affectedContributorIds)
+        );
+
+        await client.query('COMMIT');
     } catch (error) {
+        await client.query('ROLLBACK').catch(() => { });
         console.error('[Contributors] Error in storeContributorActivities:', error.message);
+    } finally {
+        client.release();
     }
 }
 
