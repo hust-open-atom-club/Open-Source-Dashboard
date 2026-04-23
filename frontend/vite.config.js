@@ -6,10 +6,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: '0.0.0.0',
-    port: 5173,
-    allowedHosts: ['ossd.fqwqf.xyz', 'localhost', '64.176.57.153', 'vless.fqwqf.xyz'],
+    port: 80,
+    allowedHosts: ['osd.openatom.club', 'localhost'],
     hmr: {
-      host: 'ossd.fqwqf.xyz',
+      host: 'osd.openatom.club',
       protocol: 'wss',
       clientPort: 443,
     },
