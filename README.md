@@ -29,6 +29,24 @@
 - Redis 缓存加速
 - 响应式设计
 
+## 界面预览
+
+以下截图来自前端部署后的实际页面，默认展示 `30d` 时间范围与 `日视图` 粒度。
+
+### 30 天增长趋势分析
+
+![30天增长趋势分析](docs/images/dashboard-growth-30d.png)
+
+### 日视图趋势分析
+
+下图包含 `Contribution Trends (PRs & Issues) - 日视图`、`Code Activity (Commits) - 日视图` 和 `SIG 对比 - PRs` 三个核心趋势图。
+
+![日视图趋势分析](docs/images/dashboard-trends-day.png)
+
+### 贡献者排行榜
+
+![贡献者排行榜](docs/images/dashboard-contributor-leaderboard.png)
+
 ## 技术栈
 
 | 层级 | 技术 |
