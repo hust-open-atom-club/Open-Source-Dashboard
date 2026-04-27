@@ -15,6 +15,10 @@ const Redis = require('redis');
 const axios = require('axios');
 const fs = require('fs/promises');
 const path = require('path');
+const {
+    isBotContributor,
+    filterBotContributors,
+} = require('./contributor_filters');
 
 // --- Configuration ---
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -241,7 +245,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                 if (createdDate && createdDate >= startDateStr && createdDate <= endDateStr) {
                     if (statsMap.has(createdDate)) {
                         statsMap.get(createdDate).new_prs++;
-                        if (pr.author?.login) {
+                        if (pr.author?.login && !isBotContributor(pr.author.login)) {
                             const username = pr.author.login;
                             statsMap.get(createdDate).active_contributors.add(username);
 
@@ -266,7 +270,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                 if (closedDate && closedDate >= startDateStr && closedDate <= endDateStr) {
                     if (statsMap.has(closedDate)) {
                         statsMap.get(closedDate).closed_merged_prs++;
-                        if (pr.author?.login) {
+                        if (pr.author?.login && !isBotContributor(pr.author.login)) {
                             const username = pr.author.login;
 
                             // 保存贡献者详情
@@ -323,7 +327,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                 if (createdDate && createdDate >= startDateStr && createdDate <= endDateStr) {
                     if (statsMap.has(createdDate)) {
                         statsMap.get(createdDate).new_issues++;
-                        if (issue.author?.login) {
+                        if (issue.author?.login && !isBotContributor(issue.author.login)) {
                             const username = issue.author.login;
                             statsMap.get(createdDate).active_contributors.add(username);
 
@@ -348,7 +352,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                 if (closedDate && closedDate >= startDateStr && closedDate <= endDateStr) {
                     if (statsMap.has(closedDate)) {
                         statsMap.get(closedDate).closed_issues++;
-                        if (issue.author?.login) {
+                        if (issue.author?.login && !isBotContributor(issue.author.login)) {
                             const username = issue.author.login;
 
                             // 保存贡献者详情
@@ -465,7 +469,8 @@ async function refreshContributorDailyActivitiesFromRepoActivities(client, orgId
 }
 
 async function storeContributorActivities(repoId, dateStr, contributorDetails) {
-    if (contributorDetails.length === 0) return;
+    const humanContributorDetails = filterBotContributors(contributorDetails);
+    if (humanContributorDetails.length === 0) return;
 
     const client = await pool.connect();
     try {
@@ -478,7 +483,7 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails) {
         const orgId = orgResult.rows[0].id;
         const affectedContributorIds = new Set();
 
-        for (const contributor of contributorDetails) {
+        for (const contributor of humanContributorDetails) {
             try {
                 // 1. 插入或更新贡献者基本信息
                 const contributorResult = await client.query(
@@ -613,7 +618,7 @@ async function fetchCommitsViaGraphQL(repoName, targetDate) {
 
                 // Track per-author stats using GitHub username
                 const user = commit.author?.user;
-                if (user?.login) {
+                if (user?.login && !isBotContributor(user.login)) {
                     const username = user.login;
                     if (!result.authorStats[username]) {
                         result.authorStats[username] = {
