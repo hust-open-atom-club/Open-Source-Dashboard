@@ -1,4 +1,5 @@
 const BOT_CONTRIBUTOR_USERNAMES = [
+    'copilot-swe-agent',
     'dependabot',
     'dependabot-preview',
     'github-actions',
