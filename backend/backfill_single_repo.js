@@ -10,6 +10,9 @@ const {
     redactSecrets,
     runGit,
 } = require('./git_secure');
+const {
+    isBotContributor,
+} = require('./contributor_filters');
 
 const ORG_NAME = 'hust-open-atom-club';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -305,7 +308,11 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
         const closedIssues = await githubRest('/search/issues', { q: `${repoQuery} is:issue -is:pr is:closed closed:${targetDateStr}`, per_page: 100 });
 
         const activeContributors = new Set();
-        [...createdPrs.items, ...createdIssues.items, ...closedPrs.items, ...closedIssues.items].forEach(item => activeContributors.add(item.user.login));
+        [...createdPrs.items, ...createdIssues.items, ...closedPrs.items, ...closedIssues.items].forEach((item) => {
+            if (!isBotContributor(item.user.login)) {
+                activeContributors.add(item.user.login);
+            }
+        });
 
         apiMetrics = {
             new_prs: createdPrs.total_count,
