@@ -63,39 +63,140 @@
 
 ```text
 oss-dashboard/
+├── .env.docker.example         # Docker Compose 环境变量示例
 ├── backend/                    # Node.js/Express 后端服务
 │   ├── server.js               # 主服务器文件
 │   ├── run_graphql_backfill.js # 数据回填脚本
 │   ├── backfill_date_range.js  # 按单日/日期范围定点回填脚本
 │   ├── run_reaggregation.js    # 重聚合脚本
-│   └── .env.example            # 环境变量示例
+│   ├── Dockerfile              # 后端镜像构建文件
+│   └── .env.local.example      # 本机后端环境变量示例
 ├── frontend/                   # React/Vite 前端应用
 │   ├── src/
 │   │   ├── App.jsx
 │   │   ├── components/
 │   │   └── services/
+│   ├── Dockerfile              # 前端镜像构建文件
+│   ├── nginx.conf              # 前端 Nginx 反向代理配置
 │   └── vite.config.js
 ├── db/                         # 数据库脚本
 │   ├── schema.sql
 │   ├── seed.sql
 │   ├── contributors_schema.sql
-│   └── views.sql
+│   ├── views.sql
+│   └── init/                   # PostgreSQL 容器初始化入口脚本
 ├── repos/                      # 本地 Git 仓库存储目录
+├── docker-compose.yml          # Docker Compose 编排文件
 └── repos.csv                   # SIG 与仓库映射关系文件
 ```
 
 ## 环境要求
 
-在本地运行前，请先准备以下依赖：
+本项目支持两种运行方式：
 
-- Node.js 18+
-- PostgreSQL
-- Redis
-- Git
+- **Docker Compose 部署**
+  - Docker Desktop
+- **本机开发启动**
+  - Node.js 18+
+  - PostgreSQL
+  - Redis
+  - Git
 
 ## 快速开始
 
-### 1. 初始化数据库
+### 1. Docker Compose 快速开始
+
+#### 1.1 准备根目录环境变量
+
+```bash
+cp .env.docker.example .env
+```
+
+Windows PowerShell 可使用：
+
+```powershell
+Copy-Item .env.docker.example .env
+```
+
+编辑根目录 `.env`，至少填写：
+
+```env
+GITHUB_TOKEN=YOUR_GITHUB_PERSONAL_ACCESS_TOKEN
+POSTGRES_PASSWORD=your_postgres_password
+```
+
+如需调整对外端口，可同时修改：
+
+```env
+BACKEND_PORT=3000
+FRONTEND_PORT=8080
+```
+
+> 根目录 `.env.docker.example` 是给 `docker compose` 使用的。  
+> 如果你要走本机 `npm start` 模式，请使用 `backend/.env.local.example`。
+
+#### 1.2 启动全部服务
+
+```bash
+docker compose up -d --build
+```
+
+启动后默认访问地址：
+
+- 前端：`http://localhost:8080`
+- 后端：`http://localhost:3000`
+
+#### 1.3 检查服务状态
+
+```bash
+docker compose ps
+docker compose logs postgres
+docker compose logs backend
+docker compose logs frontend
+```
+
+#### 1.4 验证接口
+
+```bash
+curl http://localhost:3000/api/v1/organization/sigs
+curl http://localhost:8080/api/v1/organization/sigs
+```
+
+#### 1.5 手动回填数据
+
+默认情况下，容器启动时不会自动执行历史数据回填。
+
+如果页面可以打开，但图表和贡献数据为空，请手动执行：
+
+```bash
+docker compose exec backend node run_graphql_backfill.js 30
+```
+
+如需回填结束后同步清空 Redis，可执行：
+
+```bash
+docker compose exec backend node run_graphql_backfill.js 30 --flush-cache
+```
+
+#### 1.6 停止与销毁测试环境
+
+只停止并删除容器、网络，保留卷数据：
+
+```bash
+docker compose down
+```
+
+彻底删除测试环境，包括数据库、Redis、`repos` 卷和本地构建镜像：
+
+```bash
+docker compose down -v --rmi local
+```
+
+### 2. 本机开发启动
+
+如果你要本机单独启动前后端，而不是使用 Docker，请按下面方式操作。
+
+#### 2.1 初始化数据库
 
 ```bash
 createdb oss_dashboard
@@ -110,11 +211,20 @@ psql -d oss_dashboard -f db/contributors_schema.sql
 psql -d oss_dashboard -f db/views.sql
 ```
 
-### 2. 配置并启动后端
+#### 2.2 配置并启动后端
 
 ```bash
 cd backend
-cp .env.example .env
+cp .env.local.example .env
+npm install
+npm start
+```
+
+Windows PowerShell 可使用：
+
+```powershell
+cd backend
+Copy-Item .env.local.example .env
 npm install
 npm start
 ```
@@ -130,7 +240,8 @@ ENABLE_STARTUP_CACHE_FLUSH=true
 ENABLE_STARTUP_BACKFILL=true
 STARTUP_BACKFILL_DAYS=30
 ```
-### 3. 启动前端
+
+#### 2.3 启动前端
 
 ```bash
 cd frontend
@@ -138,9 +249,23 @@ npm install
 npm run dev
 ```
 
-启动后可访问 `http://localhost:5173` 查看仪表板。
+启动后请按 Vite 终端输出的本地访问地址打开仪表板。
 
 ## 常用命令
+
+### Docker Compose
+
+```bash
+docker compose up -d --build
+docker compose ps
+docker compose logs backend
+docker compose logs frontend
+docker compose logs postgres
+docker compose exec backend node run_graphql_backfill.js 30
+docker compose exec backend node run_graphql_backfill.js 30 --flush-cache
+docker compose down
+docker compose down -v --rmi local
+```
 
 ### 后端
 
@@ -243,8 +368,14 @@ npm run lint
 psql -d oss_dashboard -c "SELECT COUNT(*) FROM activity_snapshots;"
 ```
 
-2. 检查后端与 Redis 是否正常连接
-3. 硬刷新浏览器：`Ctrl+Shift+R`
+2. 如果是通过 Docker Compose 启动，默认不会自动回填历史数据。页面能打开但无图表数据时，优先执行：
+
+```bash
+docker compose exec backend node run_graphql_backfill.js 30
+```
+
+3. 检查后端与 Redis 是否正常连接
+4. 硬刷新浏览器：`Ctrl+Shift+R`
 
 ### 贡献者数据为空
 
