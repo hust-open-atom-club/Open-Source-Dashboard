@@ -15,6 +15,11 @@ const {
     redactSecrets,
     runGit,
 } = require('./git_secure');
+const {
+    isBotContributor,
+    filterBotContributors,
+    buildHumanContributorSqlCondition,
+} = require('./contributor_filters');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,6 +27,7 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_API_BASE = 'https://api.github.com';
 const REPO_STORAGE_PATH = path.join(__dirname, '..', 'repos');
 const ORG_NAME = 'hust-open-atom-club';
+const HUMAN_CONTRIBUTOR_SQL = buildHumanContributorSqlCondition('c.github_username');
 const isEnvEnabled = (value) => ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
 const ENABLE_STARTUP_CACHE_FLUSH = isEnvEnabled(process.env.ENABLE_STARTUP_CACHE_FLUSH);
 const ENABLE_STARTUP_BACKFILL = isEnvEnabled(process.env.ENABLE_STARTUP_BACKFILL);
@@ -354,7 +360,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                 if (createdDate && createdDate >= startDateStr && createdDate <= endDateStr) {
                     if (statsMap.has(createdDate)) {
                         statsMap.get(createdDate).new_prs++;
-                        if (pr.author?.login) {
+                        if (pr.author?.login && !isBotContributor(pr.author.login)) {
                             statsMap.get(createdDate).active_contributors.add(pr.author.login);
                         }
                     }
@@ -403,7 +409,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                 if (createdDate && createdDate >= startDateStr && createdDate <= endDateStr) {
                     if (statsMap.has(createdDate)) {
                         statsMap.get(createdDate).new_issues++;
-                        if (issue.author?.login) {
+                        if (issue.author?.login && !isBotContributor(issue.author.login)) {
                             statsMap.get(createdDate).active_contributors.add(issue.author.login);
                         }
                     }
@@ -626,7 +632,8 @@ async function fetchAndStoreRepoCommitStats(repoId, repoName, targetDate) {
  * Stores contributor activities to the database
  */
 async function storeContributorActivities(repoId, dateStr, contributorDetails) {
-    if (contributorDetails.length === 0) return;
+    const humanContributorDetails = filterBotContributors(contributorDetails);
+    if (humanContributorDetails.length === 0) return;
 
     try {
         const orgResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
@@ -636,7 +643,7 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails) {
         }
         const orgId = orgResult.rows[0].id;
 
-        for (const contributor of contributorDetails) {
+        for (const contributor of humanContributorDetails) {
             try {
                 // 1. 插入或更新贡献者基本信息
                 const contributorResult = await pool.query(
@@ -689,7 +696,7 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails) {
             }
         }
 
-        console.log(`[Contributors] Stored ${contributorDetails.length} contributors for ${dateStr}`);
+        console.log(`[Contributors] Stored ${humanContributorDetails.length} contributors for ${dateStr}`);
     } catch (error) {
         console.error('[Contributors] Error in storeContributorActivities:', error.message);
     }
@@ -722,6 +729,9 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
         // 处理 PR 开启
         createdPrs.items.forEach(item => {
             const username = item.user.login;
+            if (isBotContributor(username)) {
+                return;
+            }
             activeContributors.add(username);
             if (!contributorStats.has(username)) {
                 contributorStats.set(username, {
@@ -740,6 +750,9 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
         // 处理 PR 关闭
         closedPrs.items.forEach(item => {
             const username = item.user.login;
+            if (isBotContributor(username)) {
+                return;
+            }
             activeContributors.add(username);
             if (!contributorStats.has(username)) {
                 contributorStats.set(username, {
@@ -758,6 +771,9 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
         // 处理 Issue 开启
         createdIssues.items.forEach(item => {
             const username = item.user.login;
+            if (isBotContributor(username)) {
+                return;
+            }
             activeContributors.add(username);
             if (!contributorStats.has(username)) {
                 contributorStats.set(username, {
@@ -776,6 +792,9 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
         // 处理 Issue 关闭
         closedIssues.items.forEach(item => {
             const username = item.user.login;
+            if (isBotContributor(username)) {
+                return;
+            }
             activeContributors.add(username);
             if (!contributorStats.has(username)) {
                 contributorStats.set(username, {
@@ -1604,9 +1623,11 @@ app.get('/api/v1/organization/summary', async (req, res) => {
 
         // 4. 统计唯一活跃贡献者数量（而非每日数量的总和）
         const contributorCountResult = await pool.query(
-            `SELECT COUNT(DISTINCT contributor_id) as unique_contributors
-             FROM contributor_daily_activities
-             WHERE org_id = $1 AND snapshot_date >= $2`,
+            `SELECT COUNT(DISTINCT cda.contributor_id) as unique_contributors
+             FROM contributor_daily_activities cda
+             JOIN contributors c ON cda.contributor_id = c.id
+             WHERE cda.org_id = $1 AND cda.snapshot_date >= $2
+               AND ${HUMAN_CONTRIBUTOR_SQL}`,
             [org.id, startDateStr]
         );
 
@@ -3076,15 +3097,29 @@ app.get('/api/v1/organization/day/:date', async (req, res) => {
              JOIN contributors c ON cda.contributor_id = c.id
              JOIN organizations o ON cda.org_id = o.id
              WHERE o.id = $1 AND cda.snapshot_date = $2
+               AND ${HUMAN_CONTRIBUTOR_SQL}
                AND (cda.prs_opened > 0 OR cda.prs_closed > 0 OR cda.issues_opened > 0 OR cda.issues_closed > 0 OR cda.commits_count > 0)
              ORDER BY (cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed + cda.commits_count) DESC
              LIMIT 50`,
             [org.id, date]
         );
 
+        const contributorCountResult = await pool.query(
+            `SELECT COUNT(DISTINCT cda.contributor_id) as active_contributors
+             FROM contributor_daily_activities cda
+             JOIN contributors c ON cda.contributor_id = c.id
+             WHERE cda.org_id = $1 AND cda.snapshot_date = $2
+               AND ${HUMAN_CONTRIBUTOR_SQL}
+               AND (cda.prs_opened > 0 OR cda.prs_closed > 0 OR cda.issues_opened > 0 OR cda.issues_closed > 0 OR cda.commits_count > 0)`,
+            [org.id, date]
+        );
+
         const responseData = {
             date,
-            summary: dailySummaryResult.rows[0] || {
+            summary: dailySummaryResult.rows[0] ? {
+                ...dailySummaryResult.rows[0],
+                active_contributors: parseInt(contributorCountResult.rows[0]?.active_contributors || 0, 10),
+            } : {
                 new_prs: 0, closed_merged_prs: 0, new_issues: 0, closed_issues: 0,
                 active_contributors: 0, new_commits: 0, lines_added: 0, lines_deleted: 0
             },
@@ -3146,6 +3181,7 @@ app.get('/api/v1/sig/:sigId/contributors', async (req, res) => {
              JOIN contributors c ON cra.contributor_id = c.id
              JOIN repositories r ON cra.repo_id = r.id
              WHERE r.sig_id = $1 AND cra.snapshot_date >= $2
+               AND ${HUMAN_CONTRIBUTOR_SQL}
              GROUP BY c.id, c.github_username, c.avatar_url
              HAVING SUM(cra.prs_opened + cra.issues_opened) > 0
              ORDER BY SUM(cra.prs_opened + cra.issues_opened) DESC
@@ -3220,6 +3256,7 @@ app.get('/api/v1/contributors/leaderboard', async (req, res) => {
             FROM contributors c
             JOIN contributor_daily_activities cda ON c.id = cda.contributor_id
             WHERE cda.snapshot_date >= $1
+              AND ${HUMAN_CONTRIBUTOR_SQL}
             GROUP BY c.id, c.github_username, c.avatar_url, c.first_seen_date, c.last_seen_date
             HAVING SUM(cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed + cda.commits_count) > 0
             ORDER BY ${orderBy} DESC
@@ -3272,9 +3309,11 @@ app.get('/api/v1/contributors/stats', async (req, res) => {
 
         // 总贡献者数（去重）
         const uniqueContributorsResult = await pool.query(
-            `SELECT COUNT(DISTINCT contributor_id) as count
-             FROM contributor_daily_activities
-             WHERE snapshot_date >= $1`,
+            `SELECT COUNT(DISTINCT cda.contributor_id) as count
+             FROM contributor_daily_activities cda
+             JOIN contributors c ON cda.contributor_id = c.id
+             WHERE cda.snapshot_date >= $1
+               AND ${HUMAN_CONTRIBUTOR_SQL}`,
             [startDateStr]
         );
 
@@ -3282,16 +3321,19 @@ app.get('/api/v1/contributors/stats', async (req, res) => {
         const newContributorsResult = await pool.query(
             `SELECT COUNT(*) as count
              FROM contributors
-             WHERE first_seen_date >= $1`,
+             WHERE first_seen_date >= $1
+               AND ${buildHumanContributorSqlCondition('contributors.github_username')}`,
             [startDateStr]
         );
 
         // 最活跃的一天
         const mostActiveDayResult = await pool.query(
-            `SELECT snapshot_date, COUNT(DISTINCT contributor_id) as contributor_count
-             FROM contributor_daily_activities
-             WHERE snapshot_date >= $1
-             GROUP BY snapshot_date
+            `SELECT cda.snapshot_date, COUNT(DISTINCT cda.contributor_id) as contributor_count
+             FROM contributor_daily_activities cda
+             JOIN contributors c ON cda.contributor_id = c.id
+             WHERE cda.snapshot_date >= $1
+               AND ${HUMAN_CONTRIBUTOR_SQL}
+             GROUP BY cda.snapshot_date
              ORDER BY contributor_count DESC
              LIMIT 1`,
             [startDateStr]
@@ -3323,6 +3365,10 @@ app.get('/api/v1/contributors/:username', async (req, res) => {
     const cacheTTL = 60 * 10;
 
     try {
+        if (isBotContributor(username)) {
+            return res.status(404).json({ error: 'Contributor not found' });
+        }
+
         // Check cache
         const cachedData = await redisClient.get(cacheKey);
         if (cachedData) {
