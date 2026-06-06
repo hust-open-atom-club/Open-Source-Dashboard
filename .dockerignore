@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+**/.env
+**/node_modules
+**/dist
+repos
+exports
+*.log
+docs
+note
+db
+
+
