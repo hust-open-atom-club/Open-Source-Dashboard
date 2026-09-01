@@ -45,14 +45,14 @@ INSERT INTO repositories (org_id, sig_id, name) VALUES
 (get_org_id(), get_sig_id('Linux内核SIG'), 'LT'),
 (get_org_id(), get_sig_id('Linux内核SIG'), 'linux-edu-rank'),
 (get_org_id(), get_sig_id('Linux内核SIG'), 'HUST-OS-Kernel-Contribution'),
-(get_org_id(), get_sig_id('Linux内核SIG'), 'KTestRobot'),
+(get_org_id(), get_sig_id('Linux内核SIG'), 'GGPatch-Robot'),
 (get_org_id(), get_sig_id('Linux内核SIG'), 'larkbot_v2');
 
 -- RUSTSBI SIG
 INSERT INTO repositories (org_id, sig_id, name) VALUES
 (get_org_id(), get_sig_id('RUSTSBI SIG'), 'hustoa-vm'),
 (get_org_id(), get_sig_id('RUSTSBI SIG'), 'rustsbi'),
-(get_org_id(), get_sig_id('RUSTSBI SIG'), 'RISCV-ONLINE');
+(get_org_id(), get_sig_id('RUSTSBI SIG'), 'robustone-online');
 
 -- HCTT SIG
 INSERT INTO repositories (org_id, sig_id, name) VALUES
@@ -82,8 +82,8 @@ INSERT INTO repositories (org_id, sig_id, name) VALUES
 (get_org_id(), get_sig_id('Dojo SIG'), 'welcome-dojo'),
 (get_org_id(), get_sig_id('Dojo SIG'), 'linux101-dojo-x64'),
 (get_org_id(), get_sig_id('Dojo SIG'), 'pwntools-dojo'),
-(get_org_id(), get_sig_id('Dojo SIG'), 'Pokemon_League_Conference_X64'),
-(get_org_id(), get_sig_id('Dojo SIG'), 'Pokemon_League_Conference_ARM64'),
+(get_org_id(), get_sig_id('Dojo SIG'), 'Pokemon_League_Conference_Dojo_X64'),
+(get_org_id(), get_sig_id('Dojo SIG'), 'Pokemon_League_Conference_Dojo_ARM64'),
 (get_org_id(), get_sig_id('Dojo SIG'), 'Pewter_Dojo_X64'),
 (get_org_id(), get_sig_id('Dojo SIG'), 'Cerulean_Dojo_X64'),
 (get_org_id(), get_sig_id('Dojo SIG'), 'Saffron_Dojo_X64'),
@@ -103,7 +103,6 @@ INSERT INTO repositories (org_id, sig_id, name) VALUES
 (get_org_id(), get_sig_id('Dojo SIG'), 'software-security-dojo-x64'),
 (get_org_id(), get_sig_id('Dojo SIG'), 'software-security-materials'),
 (get_org_id(), get_sig_id('Dojo SIG'), 'software-security-lab-dojo-x64'),
-(get_org_id(), get_sig_id('Dojo SIG'), 'software-security-dojo-arm64'),
 (get_org_id(), get_sig_id('Dojo SIG'), 'giteerank'),
 (get_org_id(), get_sig_id('Dojo SIG'), 'HUST_SoftwareSecurity'),
 (get_org_id(), get_sig_id('Dojo SIG'), 'test-dojo'),
@@ -120,4 +119,3 @@ INSERT INTO repositories (org_id, sig_id, name) VALUES
 -- Clean up helper functions
 DROP FUNCTION get_org_id();
 DROP FUNCTION get_sig_id(sig_name VARCHAR);
-
