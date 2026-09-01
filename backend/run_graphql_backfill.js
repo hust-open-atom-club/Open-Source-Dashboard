@@ -154,7 +154,7 @@ async function githubGraphQL(query, variables = {}) {
 }
 
 // --- Fetch Repo Stats via GraphQL ---
-async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
+async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate, graphQLClient = githubGraphQL) {
     const startDateStr = formatDate(startDate);
     const endDateStr = formatDate(endDate);
 
@@ -223,16 +223,15 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
         let totalPrsFetched = 0;
 
         while (!prDone) {
-            const data = await githubGraphQL(query, {
+            const data = await graphQLClient(query, {
                 owner: ORG_NAME,
                 repo: repoName,
                 prCursor: prCursor,
                 issueCursor: null,
             });
 
-            if (!data.repository) {
-                console.warn(`[GraphQL] Repository ${repoName} not found or inaccessible.`);
-                return statsMap;
+            if (!data?.repository) {
+                throw new Error(`Repository ${repoName} not found or inaccessible.`);
             }
 
             const prs = data.repository.pullRequests;
@@ -310,12 +309,16 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
         let totalIssuesFetched = 0;
 
         while (!issueDone) {
-            const data = await githubGraphQL(query, {
+            const data = await graphQLClient(query, {
                 owner: ORG_NAME,
                 repo: repoName,
                 prCursor: null,
                 issueCursor: issueCursor,
             });
+
+            if (!data?.repository) {
+                throw new Error(`Repository ${repoName} not found or inaccessible.`);
+            }
 
             const issues = data.repository.issues;
             totalIssuesFetched += issues.nodes.length;
@@ -392,8 +395,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
         return { statsMap, contributorDetailsMap };
 
     } catch (error) {
-        console.error(`[GraphQL] Error fetching stats for ${repoName}:`, error.message);
-        return { statsMap, contributorDetailsMap };
+        throw new Error(`[GraphQL] Failed to fetch stats for ${repoName}: ${error.message}`, { cause: error });
     }
 }
 
@@ -427,6 +429,7 @@ async function storeRepoApiStatsForDate(repoId, repoName, dateStr, stats, contri
         }
     } catch (error) {
         console.error(`[GraphQL] Error storing stats for ${repoName}@${dateStr}:`, error.message);
+        throw error;
     }
 }
 
@@ -543,7 +546,7 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails) {
  * Fetch commits for a repository on a specific date using GraphQL API
  * Returns commit count, line stats, and per-author breakdown with proper GitHub usernames
  */
-async function fetchCommitsViaGraphQL(repoName, targetDate) {
+async function fetchCommitsViaGraphQL(repoName, targetDate, graphQLClient = githubGraphQL) {
     const startDate = new Date(targetDate);
     startDate.setHours(0, 0, 0, 0);
 
@@ -598,7 +601,7 @@ async function fetchCommitsViaGraphQL(repoName, targetDate) {
         let hasNextPage = true;
 
         while (hasNextPage) {
-            const data = await githubGraphQL(query, {
+            const data = await graphQLClient(query, {
                 owner: ORG_NAME,
                 repo: repoName,
                 since,
@@ -606,9 +609,17 @@ async function fetchCommitsViaGraphQL(repoName, targetDate) {
                 cursor
             });
 
-            const history = data?.repository?.defaultBranchRef?.target?.history;
-            if (!history || !history.nodes) {
+            if (!data?.repository) {
+                throw new Error(`Repository ${repoName} not found or inaccessible.`);
+            }
+
+            if (!data.repository.defaultBranchRef) {
                 break;
+            }
+
+            const history = data.repository.defaultBranchRef.target?.history;
+            if (!history?.nodes) {
+                throw new Error(`Repository ${repoName} default branch did not return commit history.`);
             }
 
             for (const commit of history.nodes) {
@@ -639,10 +650,7 @@ async function fetchCommitsViaGraphQL(repoName, targetDate) {
             cursor = history.pageInfo?.endCursor || null;
         }
     } catch (error) {
-        // Repository might not exist or have no commits
-        if (!error.message?.includes('404')) {
-            console.error(`[GraphQL] Error fetching commits for ${repoName}:`, error.message);
-        }
+        throw new Error(`[GraphQL] Failed to fetch commits for ${repoName}: ${error.message}`, { cause: error });
     }
 
     return result;
@@ -723,6 +731,7 @@ async function fetchAndStoreRepoCommitStats(repoId, repoName, targetDate) {
         }
     } catch (error) {
         console.error(`[Commits] Error storing commit data for ${repoName}:`, error.message);
+        throw error;
     }
 }
 
@@ -771,6 +780,7 @@ async function aggregateSigSnapshot(sigId, targetDate) {
 // --- Concurrency Helper ---
 async function runPromisesWithConcurrency(tasks, concurrency) {
     const results = [];
+    const failures = [];
     let currentIndex = 0;
 
     const worker = async () => {
@@ -781,6 +791,7 @@ async function runPromisesWithConcurrency(tasks, concurrency) {
                 results[taskIndex] = await task();
             } catch (error) {
                 results[taskIndex] = error;
+                failures.push(error);
                 console.error(`Task at index ${taskIndex} failed:`, error.message);
             }
         }
@@ -788,6 +799,10 @@ async function runPromisesWithConcurrency(tasks, concurrency) {
 
     const workers = Array(concurrency).fill(null).map(() => worker());
     await Promise.all(workers);
+
+    if (failures.length > 0) {
+        throw new AggregateError(failures, `${failures.length} task(s) failed.`);
+    }
 
     return results;
 }
@@ -930,6 +945,7 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
                     console.log(`[GraphQL] ${repo.name}: ✅ ${statsMap.size} days (${formatElapsedTime(startTime)}, Rate limit: ${rateLimitRemaining})`);
                 } catch (error) {
                     console.error(`[GraphQL] ${repo.name}: ❌ ${error.message}`);
+                    throw error;
                 }
             });
         }
@@ -961,7 +977,13 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
             }
         })();
 
-        await Promise.all([gitPromise, graphqlPromise]);
+        const phaseResults = await Promise.allSettled([gitPromise, graphqlPromise]);
+        const phaseFailures = phaseResults
+            .filter((result) => result.status === 'rejected')
+            .map((result) => result.reason);
+        if (phaseFailures.length > 0) {
+            throw new AggregateError(phaseFailures, `${phaseFailures.length} ingestion phase(s) failed.`);
+        }
         console.log('\n=== PHASE 1 & 2 Complete ===\n');
 
         // === PHASE 3: Aggregation ===
@@ -1068,6 +1090,7 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
         console.error('GraphQL Backfill Job Failed:', error.message);
         console.error(error.stack);
         console.log('Progress saved. Run again to resume.');
+        throw error;
     } finally {
         await pool.end();
         if (redisClient.isOpen) {
@@ -1109,6 +1132,9 @@ if (require.main === module) {
 module.exports = {
     runGraphQLBackfill,
     runGraphQLBackfillForRange,
+    fetchRepoStatsViaGraphQL,
+    fetchCommitsViaGraphQL,
+    runPromisesWithConcurrency,
     formatDate,
     getScopedProgressFile,
 };
