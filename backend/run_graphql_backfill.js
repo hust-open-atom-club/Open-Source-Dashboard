@@ -19,6 +19,10 @@ const {
     isBotContributor,
     filterBotContributors,
 } = require('./contributor_filters');
+const {
+    fetchCommitHistoryViaGraphQL: fetchCommitHistoryRangeViaGraphQL,
+    fetchCommitsViaGraphQL: fetchCommitsForDayViaGraphQL,
+} = require('./github_commit_history');
 
 // --- Configuration ---
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -540,130 +544,25 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails) {
     }
 }
 
-// --- GraphQL Commit Fetching (replaces git log) ---
-
-/**
- * Fetch commits for a repository on a specific date using GraphQL API
- * Returns commit count, line stats, and per-author breakdown with proper GitHub usernames
- */
+// Keep the default client here so the backfill shares its adaptive rate-limit tracking.
 async function fetchCommitsViaGraphQL(repoName, targetDate, graphQLClient = githubGraphQL) {
-    const startDate = new Date(targetDate);
-    startDate.setHours(0, 0, 0, 0);
+    return fetchCommitsForDayViaGraphQL(repoName, targetDate, graphQLClient, ORG_NAME);
+}
 
-    const endDate = new Date(targetDate);
-    endDate.setDate(endDate.getDate() + 1);
-    endDate.setHours(0, 0, 0, 0);
-
-    // GitHub requires ISO 8601 format for timestamps
-    const since = startDate.toISOString();
-    const until = endDate.toISOString();
-
-    const query = `
-        query RepoCommits($owner: String!, $repo: String!, $since: GitTimestamp!, $until: GitTimestamp!, $cursor: String) {
-            repository(owner: $owner, name: $repo) {
-                defaultBranchRef {
-                    target {
-                        ... on Commit {
-                            history(first: 100, since: $since, until: $until, after: $cursor) {
-                                totalCount
-                                pageInfo {
-                                    hasNextPage
-                                    endCursor
-                                }
-                                nodes {
-                                    author {
-                                        user {
-                                            login
-                                            databaseId
-                                            avatarUrl
-                                        }
-                                    }
-                                    additions
-                                    deletions
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    `;
-
-    const result = {
-        new_commits: 0,
-        lines_added: 0,
-        lines_deleted: 0,
-        authorStats: {} // { username: { github_id, avatar_url, commits, lines_added, lines_deleted } }
-    };
-
-    try {
-        let cursor = null;
-        let hasNextPage = true;
-
-        while (hasNextPage) {
-            const data = await graphQLClient(query, {
-                owner: ORG_NAME,
-                repo: repoName,
-                since,
-                until,
-                cursor
-            });
-
-            if (!data?.repository) {
-                throw new Error(`Repository ${repoName} not found or inaccessible.`);
-            }
-
-            if (!data.repository.defaultBranchRef) {
-                break;
-            }
-
-            const history = data.repository.defaultBranchRef.target?.history;
-            if (!history?.nodes) {
-                throw new Error(`Repository ${repoName} default branch did not return commit history.`);
-            }
-
-            for (const commit of history.nodes) {
-                result.new_commits++;
-                result.lines_added += commit.additions || 0;
-                result.lines_deleted += commit.deletions || 0;
-
-                // Track per-author stats using GitHub username
-                const user = commit.author?.user;
-                if (user?.login && !isBotContributor(user.login)) {
-                    const username = user.login;
-                    if (!result.authorStats[username]) {
-                        result.authorStats[username] = {
-                            github_id: user.databaseId,
-                            avatar_url: user.avatarUrl,
-                            commits: 0,
-                            lines_added: 0,
-                            lines_deleted: 0
-                        };
-                    }
-                    result.authorStats[username].commits++;
-                    result.authorStats[username].lines_added += commit.additions || 0;
-                    result.authorStats[username].lines_deleted += commit.deletions || 0;
-                }
-            }
-
-            hasNextPage = history.pageInfo?.hasNextPage || false;
-            cursor = history.pageInfo?.endCursor || null;
-        }
-    } catch (error) {
-        throw new Error(`[GraphQL] Failed to fetch commits for ${repoName}: ${error.message}`, { cause: error });
-    }
-
-    return result;
+async function fetchCommitHistoryViaGraphQL(repoName, startDate, endDate, graphQLClient = githubGraphQL) {
+    return fetchCommitHistoryRangeViaGraphQL(repoName, startDate, endDate, graphQLClient, ORG_NAME);
 }
 
 /**
  * Fetch and store commit statistics for a repository (GraphQL-based)
  */
 async function fetchAndStoreRepoCommitStats(repoId, repoName, targetDate) {
-    const targetDateStr = formatDate(targetDate);
-
-    // Fetch commit data via GraphQL
     const commitStats = await fetchCommitsViaGraphQL(repoName, targetDate);
+    await storeRepoCommitStats(repoId, repoName, targetDate, commitStats);
+}
+
+async function storeRepoCommitStats(repoId, repoName, targetDate, commitStats) {
+    const targetDateStr = formatDate(targetDate);
 
     try {
         // Store repo-level commit stats
@@ -899,25 +798,47 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
         console.log(`⚡ GraphQL Concurrency: ${GRAPHQL_CONCURRENCY_LIMIT}`);
         console.log(`⏱️  Base delay: ${BASE_DELAY_MS}ms\n`);
 
-        // === PHASE 1 & 2: Run Git and GraphQL in parallel ===
-        console.log('=== PHASE 1 & 2: Git + GraphQL (Parallel) ===\n');
+        // === PHASE 1 & 2: Run commit history and PR/Issue GraphQL tasks in parallel ===
+        console.log('=== PHASE 1 & 2: GraphQL Ingestion (Parallel) ===\n');
 
-        // Build all Git tasks as a single pool (repo × date combinations)
-        const gitTasks = [];
-        let gitTasksSkipped = 0;
+        // Build one commit-history task per repository and bucket commits by date locally.
+        const commitTasks = [];
+        let commitReposSkipped = 0;
+        let commitDatesSkipped = 0;
         for (const repo of repositories) {
-            for (const targetDate of allDates) {
+            const pendingDates = allDates.filter((targetDate) => {
                 const dateStr = formatDate(targetDate);
+                // Keep the legacy key so interrupted backfills can resume across this upgrade.
                 const taskKey = `git:${repo.name}:${dateStr}`;
                 if (progress.completedRepos[taskKey]) {
-                    gitTasksSkipped++;
-                    continue;
+                    commitDatesSkipped++;
+                    return false;
                 }
-                gitTasks.push(async () => {
-                    await fetchAndStoreRepoCommitStats(repo.id, repo.name, targetDate);
-                    progress.completedRepos[taskKey] = true;
-                });
+                return true;
+            });
+
+            if (pendingDates.length === 0) {
+                commitReposSkipped++;
+                continue;
             }
+
+            commitTasks.push(async () => {
+                const statsMap = await fetchCommitHistoryViaGraphQL(
+                    repo.name,
+                    normalizedStartDate,
+                    normalizedEndDate
+                );
+
+                for (const targetDate of pendingDates) {
+                    const dateStr = formatDate(targetDate);
+                    const taskKey = `git:${repo.name}:${dateStr}`;
+                    await storeRepoCommitStats(repo.id, repo.name, targetDate, statsMap.get(dateStr));
+                    progress.completedRepos[taskKey] = true;
+                }
+
+                await saveProgress(progress, progressFile);
+                console.log(`[GraphQL Commits] ${repo.name}: ✅ ${pendingDates.length} days`);
+            });
         }
 
         // Build GraphQL tasks (one per repo, fetches entire date range)
@@ -950,22 +871,15 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
             });
         }
 
-        console.log(`📊 Git tasks: ${gitTasks.length} pending, ${gitTasksSkipped} skipped`);
+        console.log(`📊 GraphQL commit repositories: ${commitTasks.length} pending, ${commitReposSkipped} fully skipped (${commitDatesSkipped} completed dates)`);
         console.log(`📊 GraphQL tasks: ${graphqlTasks.length} pending, ${graphqlTasksSkipped} skipped\n`);
 
-        // Run Git and GraphQL tasks in parallel
-        const gitPromise = (async () => {
-            if (gitTasks.length > 0) {
-                console.log(`[Commits] Starting ${gitTasks.length} tasks with concurrency ${COMMIT_CONCURRENCY_LIMIT}...`);
-                const batchSize = repositories.length * 10; // Save progress every 10 days of all repos
-                for (let i = 0; i < gitTasks.length; i += batchSize) {
-                    const batch = gitTasks.slice(i, i + batchSize);
-                    await runPromisesWithConcurrency(batch, COMMIT_CONCURRENCY_LIMIT);
-                    await saveProgress(progress, progressFile);
-                    const pct = Math.round(((i + batch.length) / gitTasks.length) * 100);
-                    console.log(`[Git] Progress: ${pct}% (${formatElapsedTime(startTime)})`);
-                }
-                console.log(`[Git] ✅ Complete!`);
+        // Run commit-history and PR/Issue GraphQL tasks in parallel
+        const commitPromise = (async () => {
+            if (commitTasks.length > 0) {
+                console.log(`[GraphQL Commits] Starting ${commitTasks.length} repositories with concurrency ${COMMIT_CONCURRENCY_LIMIT}...`);
+                await runPromisesWithConcurrency(commitTasks, COMMIT_CONCURRENCY_LIMIT);
+                console.log(`[GraphQL Commits] ✅ Complete!`);
             }
         })();
 
@@ -977,7 +891,7 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
             }
         })();
 
-        const phaseResults = await Promise.allSettled([gitPromise, graphqlPromise]);
+        const phaseResults = await Promise.allSettled([commitPromise, graphqlPromise]);
         const phaseFailures = phaseResults
             .filter((result) => result.status === 'rejected')
             .map((result) => result.reason);
@@ -1133,6 +1047,7 @@ module.exports = {
     runGraphQLBackfill,
     runGraphQLBackfillForRange,
     fetchRepoStatsViaGraphQL,
+    fetchCommitHistoryViaGraphQL,
     fetchCommitsViaGraphQL,
     runPromisesWithConcurrency,
     formatDate,

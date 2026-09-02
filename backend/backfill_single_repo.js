@@ -1,15 +1,10 @@
 // A script to backfill historical data for a single, newly added repository.
 require('dotenv').config();
 const { Pool } = require('pg');
-// 复制所有需要的工具函数
-const fs = require('fs/promises');
-const path = require('path');
 const axios = require('axios');
 const {
-    cloneOrPullRepoSecure,
-    redactSecrets,
-    runGit,
-} = require('./git_secure');
+    fetchCommitHistoryViaGraphQL,
+} = require('./github_commit_history');
 const {
     isBotContributor,
 } = require('./contributor_filters');
@@ -17,7 +12,6 @@ const {
 const ORG_NAME = 'hust-open-atom-club';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_API_BASE = 'https://api.github.com';
-const REPO_STORAGE_PATH = path.join(__dirname, '..', 'repos');
 
 // --- 完整的数据库配置 ---
 const pool = new Pool({
@@ -137,133 +131,16 @@ async function githubRest(endpoint, params = {}) {
     };
 }
 
-// --- Git Commit Statistics Service ---
-
-/**
- * Clones or pulls a repository and returns the path.
- */
-async function cloneOrPullRepo(repoName) {
-    const repoPath = path.join(REPO_STORAGE_PATH, repoName);
-
-    try {
-        return await cloneOrPullRepoSecure({
-            repoName,
-            repoStoragePath: REPO_STORAGE_PATH,
-            orgName: ORG_NAME,
-        });
-    } catch (error) {
-        console.error(`${repoName}: operate failed\n${redactSecrets(error.message)}`);
-        // 确保目录存在，即使 git 操作失败
-        await fs.mkdir(repoPath, { recursive: true }).catch(() => { });
-        return repoPath;
-    }
-}
-
-/**
- * Gets commit stats for a repository within a 24-hour window using git log.
- */
-async function getCommitStats(repoName, targetDate) {
-    const repoPath = await cloneOrPullRepo(repoName);
-
-    const startDate = new Date(targetDate);
-    startDate.setHours(0, 0, 0, 0);
-
-    const endDate = new Date(targetDate);
-    endDate.setDate(endDate.getDate() + 1);
-    endDate.setHours(0, 0, 0, 0);
-
-    // 使用我们之前修复过的、时区正确的 formatDate 函数
-    const endISO = formatDate(endDate);
-    const startISO = formatDate(startDate);
-
-    try {
-        const { stdout } = await runGit([
-            '-C',
-            repoPath,
-            'log',
-            `--since=${startISO}`,
-            `--until=${endISO}`,
-            '--pretty=format:COMMIT_SEPARATOR%an',
-            '--numstat',
-        ], { maxBuffer: 1024 * 1024 * 10 });
-        if (!stdout.trim()) {
-            return { new_commits: 0, lines_added: 0, lines_deleted: 0, committers: new Set() };
-        }
-
-        const lines = stdout.trim().split('\n');
-
-        let newCommits = 0;
-        let linesAdded = 0;
-        let linesDeleted = 0;
-        const committers = new Set();
-        
-        // --- BUG FIX: 使用更健壮的解析逻辑 ---
-        for (const line of lines) {
-            if (line.startsWith('COMMIT_SEPARATOR')) {
-                // 这是一个新的 commit，我们提取作者名
-                newCommits++;
-                const author = line.substring('COMMIT_SEPARATOR'.length).trim();
-                if (author) {
-                    committers.add(author);
-                }
-            } else {
-                // 这是一个潜在的 numstat 行，我们需要严格验证它
-                const parts = line.split('\t');
-                
-                // 验证：必须有3个部分，且前两个部分必须是数字或'-'
-                if (parts.length === 3) {
-                    const isInsertionsValid = !isNaN(parseInt(parts[0], 10)) || parts[0] === '-';
-                    const isDeletionsValid = !isNaN(parseInt(parts[1], 10)) || parts[1] === '-';
-
-                    if (isInsertionsValid && isDeletionsValid) {
-                        // 确认这是一个合法的 numstat 行，再进行解析
-                        const insertions = parseInt(parts[0], 10);
-                        const deletions = parseInt(parts[1], 10);
-
-                        if (!isNaN(insertions)) {
-                            linesAdded += insertions;
-                        }
-                        if (!isNaN(deletions)) {
-                            linesDeleted += deletions;
-                        }
-                    }
-                    // 如果验证失败，我们会静默地忽略这一行，因为它不是我们想要的 numstat 数据
-                }
-            }
-        }
-
-        return {
-            new_commits: newCommits,
-            lines_added: linesAdded,
-            lines_deleted: linesDeleted,
-            committers: committers,
-        };
-
-    } catch (error) {
-        console.error(`Git command failed for ${repoName}\n${redactSecrets(error.message)}`);
-        return { new_commits: 0, lines_added: 0, lines_deleted: 0, committers: new Set() };
-    }
-}
-
 // --- Data Ingestion Service (Cron Job & Backfill) ---
 
 /**
- * [PIPELINE 1] Fetches ONLY commit stats via Git and stores them.
+ * [PIPELINE 1] Fetches commit history via GraphQL and stores it.
  * This process is completely independent of the API fetching process.
  */
-async function fetchAndStoreRepoCommitStats(repoId, repoName, targetDate) {
+async function storeRepoCommitStats(repoId, repoName, targetDate, commitStats) {
     const targetDateStr = formatDate(targetDate);
-    let commitStats;
-
-    try {
-        // This is the only fallible operation in this pipeline
-        commitStats = await getCommitStats(repoName, targetDate);
-        console.log(`[Git Pipeline] ${repoName}@${targetDateStr}: 采集到 commits=${commitStats.new_commits}, lines=+${commitStats.lines_added}/-${commitStats.lines_deleted}, committers=${commitStats.committers.size}`);
-    } catch (error) {
-        console.error(`[Git Pipeline] Failed to get commit stats for ${repoName}. Storing zero values. Error: ${error.message}`);
-        // If git log fails, we ensure zero values are stored for these specific fields.
-        commitStats = { new_commits: 0, lines_added: 0, lines_deleted: 0, committers: new Set() };
-    }
+    const authorCount = Object.keys(commitStats.authorStats).length;
+    console.log(`[GraphQL Commit Pipeline] ${repoName}@${targetDateStr}: commits=${commitStats.new_commits}, lines=+${commitStats.lines_added}/-${commitStats.lines_deleted}, authors=${authorCount}`);
 
     try {
         // Use ON CONFLICT to insert a new row or update an existing one.
@@ -279,9 +156,9 @@ async function fetchAndStoreRepoCommitStats(repoId, repoName, targetDate) {
              RETURNING id`,
             [repoId, targetDateStr, commitStats.new_commits, commitStats.lines_added, commitStats.lines_deleted]
         );
-        console.log(`[Git Pipeline] ${repoName}@${targetDateStr}: ✅ 已存储到数据库 (id=${result.rows[0].id})`);
+        console.log(`[GraphQL Commit Pipeline] ${repoName}@${targetDateStr}: ✅ 已存储到数据库 (id=${result.rows[0].id})`);
     } catch (error) {
-        console.error(`[Git Pipeline] Error storing commit data for repo ${repoName}:`, error.message);
+        console.error(`[GraphQL Commit Pipeline] Error storing commit data for repo ${repoName}:`, error.message);
         // We throw here because a DB error is more critical.
         throw error;
     }
@@ -289,7 +166,7 @@ async function fetchAndStoreRepoCommitStats(repoId, repoName, targetDate) {
 
 /**
  * [PIPELINE 2] Fetches ONLY API-related stats (PRs, Issues) and stores them.
- * This process is completely independent of the Git stats process.
+ * This process is completely independent of the commit-history process.
  */
 async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
     const targetDateStr = formatDate(targetDate);
@@ -365,6 +242,14 @@ async function backfillSingleRepository(repoName, days = 30) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    const startDate = new Date(today);
+    startDate.setDate(today.getDate() - days);
+    const endDate = new Date(today);
+    endDate.setDate(today.getDate() - 1);
+
+    console.log(`Fetching commit history through GraphQL for ${formatDate(startDate)} to ${formatDate(endDate)}...`);
+    const commitStatsMap = await fetchCommitHistoryViaGraphQL(repoName, startDate, endDate);
+
     for (let i = days; i >= 1; i--) {
         const targetDate = new Date(today);
         targetDate.setDate(today.getDate() - i);
@@ -372,9 +257,9 @@ async function backfillSingleRepository(repoName, days = 30) {
 
         console.log(`\n--- Backfilling [${repoName}] for date: ${targetDateStr} ---`);
         
-        // 2. 采集并存储 Git 数据
+        // 2. 通过 GraphQL 采集并存储 commit 数据
         // (fetchAndStoreRepoCommitStats 是您主程序中的函数)
-        await fetchAndStoreRepoCommitStats(repoId, repoName, targetDate);
+        await storeRepoCommitStats(repoId, repoName, targetDate, commitStatsMap.get(targetDateStr));
 
         // 3. 采集并存储 API 数据
         // (fetchAndStoreRepoApiStats 是您主程序中的函数)
