@@ -32,6 +32,15 @@ const GITHUB_API_BASE = 'https://api.github.com';
 const REPO_STORAGE_PATH = path.join(__dirname, '..', 'repos');
 const ORG_NAME = 'hust-open-atom-club';
 const HUMAN_CONTRIBUTOR_SQL = buildHumanContributorSqlCondition('c.github_username');
+const TRACKED_CONTRIBUTOR_ACTIVITY_SQL = `EXISTS (
+    SELECT 1
+    FROM contributor_repo_activities tracked_cra
+    JOIN repositories tracked_repo ON tracked_repo.id = tracked_cra.repo_id
+    WHERE tracked_cra.contributor_id = cda.contributor_id
+      AND tracked_cra.snapshot_date = cda.snapshot_date
+      AND tracked_repo.org_id = cda.org_id
+      AND tracked_repo.sig_id IS NOT NULL
+)`;
 const isEnvEnabled = (value) => ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
 const ENABLE_STARTUP_CACHE_FLUSH = isEnvEnabled(process.env.ENABLE_STARTUP_CACHE_FLUSH);
 const ENABLE_STARTUP_BACKFILL = isEnvEnabled(process.env.ENABLE_STARTUP_BACKFILL);
@@ -1658,7 +1667,8 @@ app.get('/api/v1/organization/summary', async (req, res) => {
              FROM contributor_daily_activities cda
              JOIN contributors c ON cda.contributor_id = c.id
              WHERE cda.org_id = $1 AND cda.snapshot_date >= $2
-               AND ${HUMAN_CONTRIBUTOR_SQL}`,
+               AND ${HUMAN_CONTRIBUTOR_SQL}
+               AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}`,
             [org.id, startDateStr]
         );
 
@@ -3115,6 +3125,7 @@ app.get('/api/v1/organization/day/:date', async (req, res) => {
              FROM repo_snapshots rs
              JOIN repositories r ON rs.repo_id = r.id
              WHERE r.org_id = $1 AND rs.snapshot_date = $2
+               AND r.sig_id IS NOT NULL
                AND (rs.new_prs > 0 OR rs.new_issues > 0 OR rs.new_commits > 0)
              ORDER BY (rs.new_prs + rs.new_issues + rs.new_commits) DESC`,
             [org.id, date]
@@ -3129,6 +3140,7 @@ app.get('/api/v1/organization/day/:date', async (req, res) => {
              JOIN organizations o ON cda.org_id = o.id
              WHERE o.id = $1 AND cda.snapshot_date = $2
                AND ${HUMAN_CONTRIBUTOR_SQL}
+               AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}
                AND (cda.prs_opened > 0 OR cda.prs_closed > 0 OR cda.issues_opened > 0 OR cda.issues_closed > 0 OR cda.commits_count > 0)
              ORDER BY (cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed + cda.commits_count) DESC
              LIMIT 50`,
@@ -3141,6 +3153,7 @@ app.get('/api/v1/organization/day/:date', async (req, res) => {
              JOIN contributors c ON cda.contributor_id = c.id
              WHERE cda.org_id = $1 AND cda.snapshot_date = $2
                AND ${HUMAN_CONTRIBUTOR_SQL}
+               AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}
                AND (cda.prs_opened > 0 OR cda.prs_closed > 0 OR cda.issues_opened > 0 OR cda.issues_closed > 0 OR cda.commits_count > 0)`,
             [org.id, date]
         );
@@ -3288,6 +3301,7 @@ app.get('/api/v1/contributors/leaderboard', async (req, res) => {
             JOIN contributor_daily_activities cda ON c.id = cda.contributor_id
             WHERE cda.snapshot_date >= $1
               AND ${HUMAN_CONTRIBUTOR_SQL}
+              AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}
             GROUP BY c.id, c.github_username, c.avatar_url, c.first_seen_date, c.last_seen_date
             HAVING SUM(cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed + cda.commits_count) > 0
             ORDER BY ${orderBy} DESC
@@ -3344,7 +3358,8 @@ app.get('/api/v1/contributors/stats', async (req, res) => {
              FROM contributor_daily_activities cda
              JOIN contributors c ON cda.contributor_id = c.id
              WHERE cda.snapshot_date >= $1
-               AND ${HUMAN_CONTRIBUTOR_SQL}`,
+               AND ${HUMAN_CONTRIBUTOR_SQL}
+               AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}`,
             [startDateStr]
         );
 
@@ -3353,7 +3368,15 @@ app.get('/api/v1/contributors/stats', async (req, res) => {
             `SELECT COUNT(*) as count
              FROM contributors
              WHERE first_seen_date >= $1
-               AND ${buildHumanContributorSqlCondition('contributors.github_username')}`,
+               AND ${buildHumanContributorSqlCondition('contributors.github_username')}
+               AND EXISTS (
+                   SELECT 1
+                   FROM contributor_repo_activities tracked_cra
+                   JOIN repositories tracked_repo ON tracked_repo.id = tracked_cra.repo_id
+                   WHERE tracked_cra.contributor_id = contributors.id
+                     AND tracked_cra.snapshot_date >= $1
+                     AND tracked_repo.sig_id IS NOT NULL
+               )`,
             [startDateStr]
         );
 
@@ -3364,6 +3387,7 @@ app.get('/api/v1/contributors/stats', async (req, res) => {
              JOIN contributors c ON cda.contributor_id = c.id
              WHERE cda.snapshot_date >= $1
                AND ${HUMAN_CONTRIBUTOR_SQL}
+               AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}
              GROUP BY cda.snapshot_date
              ORDER BY contributor_count DESC
              LIMIT 1`,
@@ -3425,6 +3449,14 @@ app.get('/api/v1/contributors/:username', async (req, res) => {
             `SELECT snapshot_date, prs_opened, prs_closed, issues_opened, issues_closed, commits_count
              FROM contributor_daily_activities
              WHERE contributor_id = $1 AND snapshot_date >= $2
+               AND EXISTS (
+                   SELECT 1
+                   FROM contributor_repo_activities tracked_cra
+                   JOIN repositories tracked_repo ON tracked_repo.id = tracked_cra.repo_id
+                   WHERE tracked_cra.contributor_id = contributor_daily_activities.contributor_id
+                     AND tracked_cra.snapshot_date = contributor_daily_activities.snapshot_date
+                     AND tracked_repo.sig_id IS NOT NULL
+               )
              ORDER BY snapshot_date ASC`,
             [contributor.id, startDateStr]
         );
@@ -3436,6 +3468,7 @@ app.get('/api/v1/contributors/:username', async (req, res) => {
              FROM contributor_repo_activities cra
              JOIN repositories r ON cra.repo_id = r.id
              WHERE cra.contributor_id = $1 AND cra.snapshot_date >= $2
+               AND r.sig_id IS NOT NULL
              GROUP BY r.id, r.name
              ORDER BY total_activities DESC`,
             [contributor.id, startDateStr]

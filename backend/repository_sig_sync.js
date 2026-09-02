@@ -67,6 +67,7 @@ function validatePropertyDefinition(definition, propertyName) {
 function normalizeAssignments(rows, propertyName) {
     const supportedValues = new Set([UNTRACKED_VALUE, ...Object.keys(SIG_DEFINITIONS)]);
     const seenNames = new Set();
+    const seenRepositoryIds = new Set();
     const assignments = [];
 
     for (const row of rows) {
@@ -81,6 +82,19 @@ function normalizeAssignments(rows, propertyName) {
         }
         seenNames.add(normalizedName);
 
+        const rawRepositoryId = row?.repository_id;
+        const repositoryIdIsValid =
+            (typeof rawRepositoryId === 'number' && Number.isSafeInteger(rawRepositoryId) && rawRepositoryId > 0)
+            || (typeof rawRepositoryId === 'string' && /^[1-9]\d*$/.test(rawRepositoryId));
+        if (!repositoryIdIsValid) {
+            throw new Error(`GitHub returned an invalid repository_id for ${repositoryName}.`);
+        }
+        const repositoryId = BigInt(rawRepositoryId).toString();
+        if (seenRepositoryIds.has(repositoryId)) {
+            throw new Error(`GitHub returned duplicate repository_id ${repositoryId}.`);
+        }
+        seenRepositoryIds.add(repositoryId);
+
         const propertyMatches = Array.isArray(row.properties)
             ? row.properties.filter((property) => property.property_name === propertyName)
             : [];
@@ -94,6 +108,7 @@ function normalizeAssignments(rows, propertyName) {
         }
 
         assignments.push({
+            repositoryId,
             repositoryName,
             propertyValue,
             sigSlug: propertyValue === UNTRACKED_VALUE ? null : propertyValue,
@@ -102,6 +117,91 @@ function normalizeAssignments(rows, propertyName) {
 
     assignments.sort((left, right) => left.repositoryName.localeCompare(right.repositoryName));
     return assignments;
+}
+
+async function reaggregateContributorDailyActivities(client, orgId) {
+    const result = await client.query(
+        `INSERT INTO contributor_daily_activities (
+             contributor_id, org_id, snapshot_date, prs_opened, prs_closed,
+             issues_opened, issues_closed, active_repos_count
+         )
+         SELECT cra.contributor_id,
+                $1,
+                cra.snapshot_date,
+                COALESCE(SUM(cra.prs_opened), 0)::INTEGER,
+                COALESCE(SUM(cra.prs_closed), 0)::INTEGER,
+                COALESCE(SUM(cra.issues_opened), 0)::INTEGER,
+                COALESCE(SUM(cra.issues_closed), 0)::INTEGER,
+                COUNT(DISTINCT CASE
+                    WHEN cra.prs_opened > 0
+                      OR cra.prs_closed > 0
+                      OR cra.issues_opened > 0
+                      OR cra.issues_closed > 0
+                      OR cra.commits_count > 0
+                    THEN cra.repo_id
+                END)::INTEGER
+         FROM contributor_repo_activities cra
+         JOIN repositories r ON r.id = cra.repo_id
+         WHERE r.org_id = $1
+           AND r.sig_id IS NOT NULL
+         GROUP BY cra.contributor_id, cra.snapshot_date
+         ON CONFLICT (contributor_id, org_id, snapshot_date) DO UPDATE
+         SET prs_opened = EXCLUDED.prs_opened,
+             prs_closed = EXCLUDED.prs_closed,
+             issues_opened = EXCLUDED.issues_opened,
+             issues_closed = EXCLUDED.issues_closed,
+             active_repos_count = EXCLUDED.active_repos_count`,
+        [orgId]
+    );
+
+    await client.query(
+        `UPDATE contributor_daily_activities cda
+         SET prs_opened = 0,
+             prs_closed = 0,
+             issues_opened = 0,
+             issues_closed = 0,
+             active_repos_count = 0
+         WHERE cda.org_id = $1
+           AND NOT EXISTS (
+               SELECT 1
+               FROM contributor_repo_activities cra
+               JOIN repositories r ON r.id = cra.repo_id
+               WHERE cra.contributor_id = cda.contributor_id
+                 AND cra.snapshot_date = cda.snapshot_date
+                 AND r.org_id = cda.org_id
+                 AND r.sig_id IS NOT NULL
+           )`,
+        [orgId]
+    );
+
+    // Older data stored commit metrics only in contributor_daily_activities.
+    // Preserve those legacy values until a backfill creates repository-level
+    // attribution; once any raw attribution exists, rebuild from tracked repos.
+    await client.query(
+        `WITH attributed AS (
+             SELECT cra.contributor_id,
+                    cra.snapshot_date,
+                    COALESCE(SUM(cra.commits_count) FILTER (WHERE r.sig_id IS NOT NULL), 0)::INTEGER AS commits_count,
+                    COALESCE(SUM(cra.lines_added) FILTER (WHERE r.sig_id IS NOT NULL), 0)::INTEGER AS lines_added,
+                    COALESCE(SUM(cra.lines_deleted) FILTER (WHERE r.sig_id IS NOT NULL), 0)::INTEGER AS lines_deleted
+             FROM contributor_repo_activities cra
+             JOIN repositories r ON r.id = cra.repo_id
+             WHERE r.org_id = $1
+             GROUP BY cra.contributor_id, cra.snapshot_date
+             HAVING BOOL_OR(cra.commits_count <> 0 OR cra.lines_added <> 0 OR cra.lines_deleted <> 0)
+         )
+         UPDATE contributor_daily_activities cda
+         SET commits_count = attributed.commits_count,
+             lines_added = attributed.lines_added,
+             lines_deleted = attributed.lines_deleted
+         FROM attributed
+         WHERE cda.org_id = $1
+           AND cda.contributor_id = attributed.contributor_id
+           AND cda.snapshot_date = attributed.snapshot_date`,
+        [orgId]
+    );
+
+    return result.rowCount || 0;
 }
 
 async function fetchRepositorySigAssignments({
@@ -286,45 +386,55 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
         }
 
         const existingResult = await client.query(
-            `SELECT r.id, r.name, r.sig_id, sig.slug AS sig_slug
+            `SELECT r.id, r.github_id, r.name, r.sig_id, sig.slug AS sig_slug
              FROM repositories r
              LEFT JOIN special_interest_groups sig ON sig.id = r.sig_id
              WHERE r.org_id = $1`,
             [orgId]
         );
         const existingByName = new Map();
+        const existingByGithubId = new Map();
         for (const repository of existingResult.rows) {
             const normalizedName = repository.name.toLowerCase();
             if (existingByName.has(normalizedName)) {
                 throw new Error(`Database contains duplicate repository names ignoring case: ${repository.name}`);
             }
             existingByName.set(normalizedName, repository);
-        }
-
-        const remoteNames = new Set(assignments.map((assignment) => assignment.repositoryName.toLowerCase()));
-        const affectedSigIds = new Set();
-        const changes = [];
-        let created = 0;
-        let disabled = 0;
-
-        for (const repository of existingResult.rows) {
-            if (!remoteNames.has(repository.name.toLowerCase()) && repository.sig_id !== null) {
-                affectedSigIds.add(repository.sig_id);
-                await client.query('UPDATE repositories SET sig_id = NULL WHERE id = $1', [repository.id]);
-                changes.push({ repository: repository.name, from: repository.sig_slug, to: null });
-                disabled += 1;
+            if (repository.github_id !== null) {
+                const githubId = String(repository.github_id);
+                if (existingByGithubId.has(githubId)) {
+                    throw new Error(`Database contains duplicate GitHub repository ID: ${githubId}`);
+                }
+                existingByGithubId.set(githubId, repository);
             }
         }
 
+        const affectedSigIds = new Set();
+        const matchedRepositoryIds = new Set();
+        const changes = [];
+        let created = 0;
+        let disabled = 0;
+        let trackingChanged = false;
+
         for (const assignment of assignments) {
-            const existing = existingByName.get(assignment.repositoryName.toLowerCase());
+            let existing = existingByGithubId.get(assignment.repositoryId);
+            if (!existing) {
+                const nameMatch = existingByName.get(assignment.repositoryName.toLowerCase());
+                if (nameMatch?.github_id === null) {
+                    existing = nameMatch;
+                } else if (nameMatch) {
+                    throw new Error(
+                        `Repository name ${assignment.repositoryName} is already assigned to GitHub ID ${nameMatch.github_id}.`
+                    );
+                }
+            }
             const targetSigId = assignment.sigSlug === null ? null : sigIdsBySlug.get(assignment.sigSlug);
 
             if (!existing) {
                 await client.query(
-                    `INSERT INTO repositories (org_id, sig_id, name)
-                     VALUES ($1, $2, $3)`,
-                    [orgId, targetSigId, assignment.repositoryName]
+                    `INSERT INTO repositories (org_id, sig_id, github_id, name)
+                     VALUES ($1, $2, $3, $4)`,
+                    [orgId, targetSigId, assignment.repositoryId, assignment.repositoryName]
                 );
                 if (targetSigId !== null) {
                     affectedSigIds.add(targetSigId);
@@ -334,17 +444,23 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
                 continue;
             }
 
+            matchedRepositoryIds.add(existing.id);
+
             const mappingChanged = existing.sig_slug !== assignment.sigSlug;
             const nameChanged = existing.name !== assignment.repositoryName;
-            if (mappingChanged || nameChanged) {
+            const githubIdChanged = existing.github_id === null;
+            if (mappingChanged || nameChanged || githubIdChanged) {
                 await client.query(
                     `UPDATE repositories
-                     SET name = $1, sig_id = $2
-                     WHERE id = $3`,
-                    [assignment.repositoryName, targetSigId, existing.id]
+                     SET name = $1, sig_id = $2, github_id = $3
+                     WHERE id = $4`,
+                    [assignment.repositoryName, targetSigId, assignment.repositoryId, existing.id]
                 );
             }
             if (mappingChanged) {
+                if ((existing.sig_id === null) !== (targetSigId === null)) {
+                    trackingChanged = true;
+                }
                 if (existing.sig_id !== null) {
                     affectedSigIds.add(existing.sig_id);
                 }
@@ -359,11 +475,24 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
             }
         }
 
+        for (const repository of existingResult.rows) {
+            if (!matchedRepositoryIds.has(repository.id) && repository.sig_id !== null) {
+                affectedSigIds.add(repository.sig_id);
+                await client.query('UPDATE repositories SET sig_id = NULL WHERE id = $1', [repository.id]);
+                changes.push({ repository: repository.name, from: repository.sig_slug, to: null });
+                disabled += 1;
+                trackingChanged = true;
+            }
+        }
+
         const reaggregation = await reaggregateAffectedHistoricalSnapshots(
             client,
             orgId,
             [...affectedSigIds]
         );
+        reaggregation.contributorDailyActivities = trackingChanged
+            ? await reaggregateContributorDailyActivities(client, orgId)
+            : 0;
 
         await client.query('COMMIT');
 
@@ -412,6 +541,7 @@ module.exports = {
     normalizeAssignments,
     validatePropertyDefinition,
     fetchRepositorySigAssignments,
+    reaggregateContributorDailyActivities,
     reaggregateAffectedHistoricalSnapshots,
     applyRepositorySigAssignments,
     syncRepositorySigsFromGitHub,

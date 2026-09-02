@@ -347,7 +347,8 @@ npm run lint
 - **仓库归属**：以 GitHub 组织仓库的 `osd_sig` Custom Property 为唯一来源，不再维护仓库映射文件
 - **属性同步**：后端启动、定时采集和回填前都会完整读取并同步 `osd_sig`
 - **排除状态**：`osd_sig=untracked` 的仓库保留原始历史快照，但不参与后续采集和 SIG/组织聚合
-- **历史迁移**：仓库切换 SIG 或切换到/离开 `untracked` 时，会按当前归属重新聚合已有历史快照
+- **稳定身份**：数据库保存 GitHub `repository_id`，仓库重命名时沿用原记录和全部历史数据
+- **历史迁移**：仓库切换 SIG 或切换到/离开 `untracked` 时，会按当前归属重新聚合已有历史快照和贡献者汇总
 - **自动更新**：后端服务默认每 6 小时自动采集一次新数据
 - **手动回填**：使用 `backend/run_graphql_backfill.js`
 - **定点回填**：使用 `backend/backfill_date_range.js` 按单天或自定义日期范围修复数据

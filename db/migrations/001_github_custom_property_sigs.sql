@@ -54,6 +54,22 @@ ALTER TABLE repositories
 ALTER COLUMN sig_id DROP NOT NULL;
 
 ALTER TABLE repositories
+ADD COLUMN IF NOT EXISTS github_id BIGINT;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'repositories'::regclass
+          AND conname = 'repositories_github_id_key'
+    ) THEN
+        ALTER TABLE repositories
+        ADD CONSTRAINT repositories_github_id_key UNIQUE (github_id);
+    END IF;
+END $$;
+
+ALTER TABLE repositories
 DROP CONSTRAINT IF EXISTS repositories_sig_id_fkey;
 
 ALTER TABLE repositories
