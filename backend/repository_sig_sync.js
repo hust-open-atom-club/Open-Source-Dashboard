@@ -119,6 +119,22 @@ function normalizeAssignments(rows, propertyName) {
     return assignments;
 }
 
+function reserveTemporaryRepositoryName(repository, reservedNames) {
+    const identity = repository.github_id === null
+        ? `db-${repository.id}`
+        : `github-${repository.github_id}`;
+
+    for (let attempt = 0; ; attempt += 1) {
+        const suffix = `~osd-history-${identity}${attempt === 0 ? '' : `-${attempt}`}`;
+        const candidate = `${repository.name.slice(0, 255 - suffix.length)}${suffix}`;
+        const normalizedCandidate = candidate.toLowerCase();
+        if (!reservedNames.has(normalizedCandidate)) {
+            reservedNames.add(normalizedCandidate);
+            return candidate;
+        }
+    }
+}
+
 async function reaggregateContributorDailyActivities(client, orgId) {
     const result = await client.query(
         `INSERT INTO contributor_daily_activities (
@@ -416,18 +432,56 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
         let disabled = 0;
         let trackingChanged = false;
 
-        for (const assignment of assignments) {
+        const assignmentPlans = assignments.map((assignment) => {
             let existing = existingByGithubId.get(assignment.repositoryId);
             if (!existing) {
                 const nameMatch = existingByName.get(assignment.repositoryName.toLowerCase());
                 if (nameMatch?.github_id === null) {
                     existing = nameMatch;
-                } else if (nameMatch) {
-                    throw new Error(
-                        `Repository name ${assignment.repositoryName} is already assigned to GitHub ID ${nameMatch.github_id}.`
-                    );
                 }
             }
+
+            if (existing) {
+                matchedRepositoryIds.add(existing.id);
+            }
+
+            return { assignment, existing };
+        });
+
+        // Vacate names before applying final updates. This supports both rename
+        // swaps and a new GitHub repository reusing the name of a deleted one,
+        // while retaining the old row and all history under its stable ID.
+        const plansByExistingId = new Map(
+            assignmentPlans
+                .filter((plan) => plan.existing)
+                .map((plan) => [plan.existing.id, plan])
+        );
+        const repositoriesToVacate = new Map();
+        for (const plan of assignmentPlans) {
+            if (plan.existing && plan.existing.name !== plan.assignment.repositoryName) {
+                repositoriesToVacate.set(plan.existing.id, plan.existing);
+            }
+
+            const nameOccupant = existingByName.get(plan.assignment.repositoryName.toLowerCase());
+            if (nameOccupant && nameOccupant.id !== plan.existing?.id) {
+                const occupantPlan = plansByExistingId.get(nameOccupant.id);
+                if (occupantPlan && occupantPlan.existing.name === occupantPlan.assignment.repositoryName) {
+                    throw new Error(`Multiple repositories would use the name ${plan.assignment.repositoryName}.`);
+                }
+                repositoriesToVacate.set(nameOccupant.id, nameOccupant);
+            }
+        }
+
+        const reservedNames = new Set([
+            ...existingResult.rows.map((repository) => repository.name.toLowerCase()),
+            ...assignments.map((assignment) => assignment.repositoryName.toLowerCase()),
+        ]);
+        for (const repository of repositoriesToVacate.values()) {
+            const temporaryName = reserveTemporaryRepositoryName(repository, reservedNames);
+            await client.query('UPDATE repositories SET name = $1 WHERE id = $2', [temporaryName, repository.id]);
+        }
+
+        for (const { assignment, existing } of assignmentPlans) {
             const targetSigId = assignment.sigSlug === null ? null : sigIdsBySlug.get(assignment.sigSlug);
 
             if (!existing) {
@@ -443,8 +497,6 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
                 created += 1;
                 continue;
             }
-
-            matchedRepositoryIds.add(existing.id);
 
             const mappingChanged = existing.sig_slug !== assignment.sigSlug;
             const nameChanged = existing.name !== assignment.repositoryName;
@@ -467,8 +519,11 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
                 if (targetSigId !== null) {
                     affectedSigIds.add(targetSigId);
                 }
+            }
+            if (mappingChanged || nameChanged) {
                 changes.push({
                     repository: assignment.repositoryName,
+                    ...(nameChanged ? { previousRepository: existing.name } : {}),
                     from: existing.sig_slug,
                     to: assignment.sigSlug,
                 });

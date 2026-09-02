@@ -221,13 +221,75 @@ test('database synchronization matches a renamed repository by GitHub ID', async
 
     assert.equal(result.created, 0);
     assert.equal(result.disabled, 0);
-    assert.deepEqual(result.changes, []);
+    assert.deepEqual(result.changes, [{
+        repository: 'new-name',
+        previousRepository: 'old-name',
+        from: 'r2',
+        to: 'r2',
+    }]);
     assert.ok(queries.some((query) =>
         query.sql.includes('UPDATE repositories')
         && query.params[0] === 'new-name'
         && query.params[3] === 10
     ));
     assert.ok(!queries.some((query) => query.sql.includes('INSERT INTO repositories (org_id')));
+});
+
+test('database synchronization preserves an old identity when its repository name is reused', async () => {
+    const queries = [];
+    const sigIds = new Map(Object.keys(SIG_DEFINITIONS).map((slug, index) => [slug, 100 + index]));
+    const client = {
+        async query(sql, params = []) {
+            queries.push({ sql, params });
+            const compact = sql.replace(/\s+/g, ' ').trim();
+            if (compact === 'BEGIN' || compact === 'COMMIT' || compact === 'ROLLBACK') {
+                return { rows: [], rowCount: 0 };
+            }
+            if (compact.startsWith('INSERT INTO organizations')) {
+                return { rows: [{ id: 1 }], rowCount: 1 };
+            }
+            if (compact.startsWith('INSERT INTO special_interest_groups')) {
+                return { rows: [{ id: sigIds.get(params[1]) }], rowCount: 1 };
+            }
+            if (compact.startsWith('SELECT r.id, r.github_id')) {
+                return {
+                    rows: [{ id: 10, github_id: '111', name: 'reused-name', sig_id: sigIds.get('r2'), sig_slug: 'r2' }],
+                    rowCount: 1,
+                };
+            }
+            return { rows: [], rowCount: 1 };
+        },
+        release() {},
+    };
+
+    const result = await applyRepositorySigAssignments({
+        pool: { async connect() { return client; } },
+        assignments: [{
+            repositoryId: '222',
+            repositoryName: 'reused-name',
+            propertyValue: 'hctt',
+            sigSlug: 'hctt',
+        }],
+    });
+
+    assert.equal(result.created, 1);
+    assert.equal(result.disabled, 1);
+    assert.ok(queries.some((query) =>
+        query.sql === 'UPDATE repositories SET name = $1 WHERE id = $2'
+        && query.params[0].includes('~osd-history-github-111')
+        && query.params[1] === 10
+    ));
+    assert.ok(queries.some((query) =>
+        query.sql.includes('INSERT INTO repositories (org_id')
+        && query.params[2] === '222'
+        && query.params[3] === 'reused-name'
+    ));
+    assert.ok(queries.some((query) =>
+        query.sql === 'UPDATE repositories SET sig_id = NULL WHERE id = $1'
+        && query.params[0] === 10
+    ));
+    assert.ok(queries.some((query) => query.sql === 'COMMIT'));
+    assert.ok(!queries.some((query) => query.sql === 'ROLLBACK'));
 });
 
 test('database synchronization rolls back when a write fails', async () => {
