@@ -41,6 +41,19 @@ const TRACKED_CONTRIBUTOR_ACTIVITY_SQL = `EXISTS (
       AND tracked_repo.org_id = cda.org_id
       AND tracked_repo.sig_id IS NOT NULL
 )`;
+const REPOSITORY_ATTRIBUTED_COMMITS_SQL = `EXISTS (
+    SELECT 1
+    FROM contributor_repo_activities attributed_cra
+    JOIN repositories attributed_repo ON attributed_repo.id = attributed_cra.repo_id
+    WHERE attributed_cra.contributor_id = cda.contributor_id
+      AND attributed_cra.snapshot_date = cda.snapshot_date
+      AND attributed_repo.org_id = cda.org_id
+      AND (
+          attributed_cra.commits_count <> 0
+          OR attributed_cra.lines_added <> 0
+          OR attributed_cra.lines_deleted <> 0
+      )
+)`;
 const isEnvEnabled = (value) => ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
 const ENABLE_STARTUP_CACHE_FLUSH = isEnvEnabled(process.env.ENABLE_STARTUP_CACHE_FLUSH);
 const ENABLE_STARTUP_BACKFILL = isEnvEnabled(process.env.ENABLE_STARTUP_BACKFILL);
@@ -3134,15 +3147,21 @@ app.get('/api/v1/organization/day/:date', async (req, res) => {
         // Get contributors active on this date
         const contributorsResult = await pool.query(
             `SELECT c.github_username, c.avatar_url,
-                    cda.prs_opened, cda.prs_closed, cda.issues_opened, cda.issues_closed, cda.commits_count
+                    cda.prs_opened, cda.prs_closed, cda.issues_opened, cda.issues_closed,
+                    CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                         THEN cda.commits_count ELSE 0 END AS commits_count
              FROM contributor_daily_activities cda
              JOIN contributors c ON cda.contributor_id = c.id
              JOIN organizations o ON cda.org_id = o.id
              WHERE o.id = $1 AND cda.snapshot_date = $2
                AND ${HUMAN_CONTRIBUTOR_SQL}
                AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}
-               AND (cda.prs_opened > 0 OR cda.prs_closed > 0 OR cda.issues_opened > 0 OR cda.issues_closed > 0 OR cda.commits_count > 0)
-             ORDER BY (cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed + cda.commits_count) DESC
+               AND (cda.prs_opened > 0 OR cda.prs_closed > 0 OR cda.issues_opened > 0 OR cda.issues_closed > 0
+                    OR CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                            THEN cda.commits_count ELSE 0 END > 0)
+             ORDER BY (cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed
+                    + CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                           THEN cda.commits_count ELSE 0 END) DESC
              LIMIT 50`,
             [org.id, date]
         );
@@ -3154,7 +3173,9 @@ app.get('/api/v1/organization/day/:date', async (req, res) => {
              WHERE cda.org_id = $1 AND cda.snapshot_date = $2
                AND ${HUMAN_CONTRIBUTOR_SQL}
                AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}
-               AND (cda.prs_opened > 0 OR cda.prs_closed > 0 OR cda.issues_opened > 0 OR cda.issues_closed > 0 OR cda.commits_count > 0)`,
+               AND (cda.prs_opened > 0 OR cda.prs_closed > 0 OR cda.issues_opened > 0 OR cda.issues_closed > 0
+                    OR CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                            THEN cda.commits_count ELSE 0 END > 0)`,
             [org.id, date]
         );
 
@@ -3294,8 +3315,11 @@ app.get('/api/v1/contributors/leaderboard', async (req, res) => {
                 COALESCE(SUM(cda.issues_opened), 0) as issues_opened,
                 COALESCE(SUM(cda.issues_closed), 0) as issues_closed,
                 COALESCE(SUM(cda.issues_opened + cda.issues_closed), 0) as issues_total,
-                COALESCE(SUM(cda.commits_count), 0) as commits_count,
-                COALESCE(SUM(cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed + cda.commits_count), 0) as total_activities,
+                COALESCE(SUM(CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                                  THEN cda.commits_count ELSE 0 END), 0) as commits_count,
+                COALESCE(SUM(cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed
+                    + CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                           THEN cda.commits_count ELSE 0 END), 0) as total_activities,
                 COUNT(DISTINCT cda.snapshot_date) as active_days
             FROM contributors c
             JOIN contributor_daily_activities cda ON c.id = cda.contributor_id
@@ -3303,7 +3327,9 @@ app.get('/api/v1/contributors/leaderboard', async (req, res) => {
               AND ${HUMAN_CONTRIBUTOR_SQL}
               AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}
             GROUP BY c.id, c.github_username, c.avatar_url, c.first_seen_date, c.last_seen_date
-            HAVING SUM(cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed + cda.commits_count) > 0
+            HAVING SUM(cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed
+                + CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                       THEN cda.commits_count ELSE 0 END) > 0
             ORDER BY ${orderBy} DESC
             LIMIT $2
         `;
@@ -3446,18 +3472,21 @@ app.get('/api/v1/contributors/:username', async (req, res) => {
         const { startDateStr } = parseRange(range);
 
         const activitiesResult = await pool.query(
-            `SELECT snapshot_date, prs_opened, prs_closed, issues_opened, issues_closed, commits_count
-             FROM contributor_daily_activities
-             WHERE contributor_id = $1 AND snapshot_date >= $2
+            `SELECT cda.snapshot_date, cda.prs_opened, cda.prs_closed,
+                    cda.issues_opened, cda.issues_closed,
+                    CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                         THEN cda.commits_count ELSE 0 END AS commits_count
+             FROM contributor_daily_activities cda
+             WHERE cda.contributor_id = $1 AND cda.snapshot_date >= $2
                AND EXISTS (
                    SELECT 1
                    FROM contributor_repo_activities tracked_cra
                    JOIN repositories tracked_repo ON tracked_repo.id = tracked_cra.repo_id
-                   WHERE tracked_cra.contributor_id = contributor_daily_activities.contributor_id
-                     AND tracked_cra.snapshot_date = contributor_daily_activities.snapshot_date
+                   WHERE tracked_cra.contributor_id = cda.contributor_id
+                     AND tracked_cra.snapshot_date = cda.snapshot_date
                      AND tracked_repo.sig_id IS NOT NULL
                )
-             ORDER BY snapshot_date ASC`,
+             ORDER BY cda.snapshot_date ASC`,
             [contributor.id, startDateStr]
         );
 
