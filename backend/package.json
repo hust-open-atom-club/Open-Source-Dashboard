@@ -17,15 +17,20 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "axios": "^1.6.8",
+    "axios": "^1.20.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "exceljs": "^4.4.0",
-    "express": "^4.19.2",
+    "express": "^4.22.2",
     "json2csv": "^6.0.0-alpha.2",
-    "node-cron": "^3.0.3",
+    "node-cron": "^4.6.0",
     "pdfkit": "^0.17.2",
     "pg": "^8.11.5",
     "redis": "^4.6.13"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
   }
 }
