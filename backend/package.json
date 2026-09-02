@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "sync-repository-sigs": "node sync_repository_sigs.js --flush-cache"
   },
   "keywords": [
     "node",

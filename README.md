@@ -68,6 +68,8 @@ oss-dashboard/
 │   ├── server.js               # 主服务器文件
 │   ├── run_graphql_backfill.js # 数据回填脚本
 │   ├── backfill_date_range.js  # 按单日/日期范围定点回填脚本
+│   ├── repository_sig_sync.js  # GitHub Custom Property 同步逻辑
+│   ├── sync_repository_sigs.js # 仓库与 SIG 关系同步命令
 │   ├── run_reaggregation.js    # 重聚合脚本
 │   ├── Dockerfile              # 后端镜像构建文件
 │   └── .env.local.example      # 本机后端环境变量示例
@@ -84,10 +86,10 @@ oss-dashboard/
 │   ├── seed.sql
 │   ├── contributors_schema.sql
 │   ├── views.sql
+│   ├── migrations/             # 已有数据库升级脚本
 │   └── init/                   # PostgreSQL 容器初始化入口脚本
 ├── repos/                      # 本地 Git 仓库存储目录
-├── docker-compose.yml          # Docker Compose 编排文件
-└── repos.csv                   # SIG 与仓库映射关系文件
+└── docker-compose.yml          # Docker Compose 编排文件
 ```
 
 ## 环境要求
@@ -206,6 +208,12 @@ psql -d oss_dashboard -f db/seed.sql
 psql -d oss_dashboard -f db/contributors_schema.sql
 ```
 
+从旧版本升级已有数据库时，先执行 Custom Property 迁移：
+
+```bash
+psql -d oss_dashboard -f db/migrations/001_github_custom_property_sigs.sql
+```
+
 如需启用可选物化视图：
 
 ```bash
@@ -262,6 +270,7 @@ docker compose ps
 docker compose logs backend
 docker compose logs frontend
 docker compose logs postgres
+docker compose exec backend npm run sync-repository-sigs
 docker compose exec backend node run_graphql_backfill.js 30
 docker compose exec backend node run_graphql_backfill.js 30 --flush-cache
 docker compose down
@@ -274,6 +283,7 @@ docker compose down -v --rmi local
 cd backend
 npm install
 npm start
+npm run sync-repository-sigs
 node run_graphql_backfill.js 30
 node run_graphql_backfill.js 30 --flush-cache
 node backfill_date_range.js --date 2026-03-12
@@ -334,6 +344,10 @@ npm run lint
 
 ## 数据更新说明
 
+- **仓库归属**：以 GitHub 组织仓库的 `osd_sig` Custom Property 为唯一来源，不再维护仓库映射文件
+- **属性同步**：后端启动、定时采集和回填前都会完整读取并同步 `osd_sig`
+- **排除状态**：`osd_sig=untracked` 的仓库保留原始历史快照，但不参与后续采集和 SIG/组织聚合
+- **历史迁移**：仓库切换 SIG 或切换到/离开 `untracked` 时，会按当前归属重新聚合已有历史快照
 - **自动更新**：后端服务默认每 6 小时自动采集一次新数据
 - **手动回填**：使用 `backend/run_graphql_backfill.js`
 - **定点回填**：使用 `backend/backfill_date_range.js` 按单天或自定义日期范围修复数据
@@ -341,6 +355,9 @@ npm run lint
 
 注意：
 
+- `GITHUB_TOKEN` 必须能够读取组织仓库及 Repository Custom Properties
+- 同步会严格分页；属性缺失、重复或出现后端不认识的 `osd_sig` 枚举时会整体失败，不会部分更新数据库
+- 可用 `npm run sync-repository-sigs` 手动同步并在关系变化后清空 Redis
 - 默认情况下，服务启动时不会自动触发历史数据回填
 - 如需在启动时自动回填，可通过环境变量 `ENABLE_STARTUP_BACKFILL=true` 显式开启
 - 可通过 `STARTUP_BACKFILL_DAYS` 控制启动回填天数，默认值为 `30`

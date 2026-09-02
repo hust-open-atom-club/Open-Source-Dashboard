@@ -14,9 +14,11 @@ CREATE TABLE organizations (
 CREATE TABLE special_interest_groups (
     id SERIAL PRIMARY KEY,
     org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    slug VARCHAR(255) NOT NULL, -- GitHub osd_sig Custom Property value
     name VARCHAR(255) NOT NULL, -- SIG 名称，如 镜像站运维 SIG
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (org_id, name)
+    UNIQUE (org_id, name),
+    UNIQUE (org_id, slug)
 );
 
 -- Table: repositories
@@ -24,7 +26,7 @@ CREATE TABLE special_interest_groups (
 CREATE TABLE repositories (
     id SERIAL PRIMARY KEY,
     org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    sig_id INTEGER NOT NULL REFERENCES special_interest_groups(id) ON DELETE CASCADE, -- 新增 SIG 关联
+    sig_id INTEGER REFERENCES special_interest_groups(id) ON DELETE SET NULL, -- NULL means osd_sig=untracked
     name VARCHAR(255) NOT NULL, -- 仓库名称，如 hust-mirrors
     description TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),

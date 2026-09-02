@@ -20,6 +20,10 @@ const {
     filterBotContributors,
     buildHumanContributorSqlCondition,
 } = require('./contributor_filters');
+const {
+    DEFAULT_PROPERTY_NAME,
+    syncRepositorySigsFromGitHub,
+} = require('./repository_sig_sync');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -107,7 +111,28 @@ async function connectRedis() {
     }
 }
 
-connectRedis();
+const redisConnectionPromise = connectRedis();
+
+async function synchronizeRepositoryMetadata() {
+    const result = await syncRepositorySigsFromGitHub({
+        pool,
+        githubToken: GITHUB_TOKEN,
+        orgName: ORG_NAME,
+        propertyName: process.env.GITHUB_SIG_PROPERTY || DEFAULT_PROPERTY_NAME,
+    });
+
+    console.log(
+        `[Repository SIG Sync] ${result.repositories} repositories: ` +
+        `${result.tracked} tracked, ${result.untracked} untracked, ${result.changes.length} changed.`
+    );
+
+    if (result.changes.length > 0 && redisClient.isOpen) {
+        await redisClient.flushAll();
+        console.log('[Repository SIG Sync] Redis cache cleared after historical re-aggregation.');
+    }
+
+    return result;
+}
 
 async function retryWithBackoff(fn, retries = 3, delayMs = 1000) {
     let lastError;
@@ -1072,6 +1097,8 @@ async function runDailyIngestionJob() {
 
     console.log(`--- Starting Daily Data Ingestion Job for date: ${targetDateStr} ---`);
     try {
+        await synchronizeRepositoryMetadata();
+
         const orgsResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
         const org = orgsResult.rows[0];
         if (!org) {
@@ -1079,7 +1106,7 @@ async function runDailyIngestionJob() {
             return;
         }
 
-        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1', [org.id]);
+        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
         const repositories = reposResult.rows;
 
         if (repositories.length === 0) {
@@ -1186,6 +1213,8 @@ async function runDailyIngestionJob() {
 async function runBackfillJob(days = 7) {
     console.log(`--- Starting Backfill Job for the last ${days} days ---`);
     try {
+        await synchronizeRepositoryMetadata();
+
         const orgsResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
         const org = orgsResult.rows[0];
         if (!org) {
@@ -1193,7 +1222,7 @@ async function runBackfillJob(days = 7) {
             return;
         }
 
-        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1', [org.id]);
+        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
         const repositories = reposResult.rows;
 
         if (repositories.length === 0) {
@@ -1350,6 +1379,8 @@ async function runBackfillJobWithGraphQL(days = 30) {
     const startTime = Date.now();
 
     try {
+        await synchronizeRepositoryMetadata();
+
         const orgsResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
         const org = orgsResult.rows[0];
         if (!org) {
@@ -1357,7 +1388,7 @@ async function runBackfillJobWithGraphQL(days = 30) {
             return;
         }
 
-        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1', [org.id]);
+        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
         const repositories = reposResult.rows;
 
         if (repositories.length === 0) {
@@ -3446,11 +3477,19 @@ app.get('/api/v1/contributors/:username', async (req, res) => {
 app.listen(PORT, '0.0.0.0', async () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
 
+    await redisConnectionPromise;
+
     // Ensure repo storage path exists
     try {
         await fs.mkdir(REPO_STORAGE_PATH, { recursive: true });
     } catch (e) {
         console.error('Error creating repo storage path:', e.message);
+    }
+
+    try {
+        await synchronizeRepositoryMetadata();
+    } catch (e) {
+        console.error('Repository SIG synchronization failed on startup:', e.message);
     }
 
     if (ENABLE_STARTUP_CACHE_FLUSH) {

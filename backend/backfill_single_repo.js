@@ -13,6 +13,10 @@ const {
 const {
     isBotContributor,
 } = require('./contributor_filters');
+const {
+    DEFAULT_PROPERTY_NAME,
+    syncRepositorySigsFromGitHub,
+} = require('./repository_sig_sync');
 
 const ORG_NAME = 'hust-open-atom-club';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -354,10 +358,23 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
 async function backfillSingleRepository(repoName, days = 30) {
     console.log(`--- [START] Backfill for single repository: [${repoName}] for the last ${days} days ---`);
 
+    await syncRepositorySigsFromGitHub({
+        pool,
+        githubToken: GITHUB_TOKEN,
+        orgName: ORG_NAME,
+        propertyName: process.env.GITHUB_SIG_PROPERTY || DEFAULT_PROPERTY_NAME,
+    });
+
     // 1. 从数据库获取 repo_id
-    const repoResult = await pool.query('SELECT id FROM repositories WHERE name = $1', [repoName]);
+    const repoResult = await pool.query(
+        `SELECT r.id
+         FROM repositories r
+         JOIN organizations org ON org.id = r.org_id
+         WHERE org.name = $1 AND r.name = $2 AND r.sig_id IS NOT NULL`,
+        [ORG_NAME, repoName]
+    );
     if (repoResult.rows.length === 0) {
-        throw new Error(`Repository "${repoName}" not found in the database. Please add it first.`);
+        throw new Error(`Repository "${repoName}" is missing or has osd_sig=untracked.`);
     }
     const repoId = repoResult.rows[0].id;
     console.log(`Found repository in DB with ID: ${repoId}`);

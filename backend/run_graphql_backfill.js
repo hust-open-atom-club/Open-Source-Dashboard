@@ -19,6 +19,10 @@ const {
     isBotContributor,
     filterBotContributors,
 } = require('./contributor_filters');
+const {
+    DEFAULT_PROPERTY_NAME,
+    syncRepositorySigsFromGitHub,
+} = require('./repository_sig_sync');
 
 // --- Configuration ---
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -873,6 +877,25 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
             await redisClient.connect();
         }
 
+        const syncResult = await syncRepositorySigsFromGitHub({
+            pool,
+            githubToken: GITHUB_TOKEN,
+            orgName: ORG_NAME,
+            propertyName: process.env.GITHUB_SIG_PROPERTY || DEFAULT_PROPERTY_NAME,
+        });
+        console.log(
+            `[Repository SIG Sync] ${syncResult.repositories} repositories: ` +
+            `${syncResult.tracked} tracked, ${syncResult.untracked} untracked, ` +
+            `${syncResult.changes.length} changed.`
+        );
+        if (syncResult.changes.length > 0) {
+            if (!redisClient.isOpen) {
+                await redisClient.connect();
+            }
+            await redisClient.flushAll();
+            console.log('[Repository SIG Sync] Redis cache cleared after historical re-aggregation.');
+        }
+
         const orgsResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
         const org = orgsResult.rows[0];
         if (!org) {
@@ -880,7 +903,7 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
             return;
         }
 
-        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1', [org.id]);
+        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
         const repositories = reposResult.rows;
 
         if (repositories.length === 0) {
