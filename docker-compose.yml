@@ -49,6 +49,7 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       PORT: 3000
       GITHUB_TOKEN: ${GITHUB_TOKEN:?Set GITHUB_TOKEN in the repository root .env file}
+      GITHUB_SIG_PROPERTY: ${GITHUB_SIG_PROPERTY:-osd_sig}
       DB_USER: ${POSTGRES_USER:-postgres}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       DB_NAME: ${POSTGRES_DB:-oss_dashboard}
