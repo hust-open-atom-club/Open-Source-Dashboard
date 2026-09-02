@@ -95,9 +95,10 @@ oss-dashboard/
 本项目支持两种运行方式：
 
 - **Docker Compose 部署**
-  - Docker Desktop
+  - Docker Engine
+  - Docker Compose
 - **本机开发启动**
-  - Node.js 18+
+  - Node.js 20+
   - PostgreSQL
   - Redis
   - Git
