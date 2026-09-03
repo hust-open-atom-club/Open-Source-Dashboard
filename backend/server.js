@@ -21,6 +21,7 @@ const {
     DEFAULT_PROPERTY_NAME,
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
+const { runPromisesWithConcurrency } = require('./promise_concurrency');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -800,40 +801,6 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
         console.error(`[API Pipeline] Error storing API data for repo ${repoName}:`, error.message);
         throw error;
     }
-}
-
-/**
- * Runs an array of promise-returning functions with limited concurrency.
- * @param {Array<() => Promise<any>>} tasks An array of functions that each return a Promise.
- * @param {number} concurrency The maximum number of tasks to run at once.
- * @returns {Promise<any[]>} A promise that resolves with an array of all task results.
- */
-async function runPromisesWithConcurrency(tasks, concurrency) {
-    const results = [];
-    let currentIndex = 0;
-
-    // The worker function that processes tasks one by one from the tasks array.
-    const worker = async () => {
-        while (currentIndex < tasks.length) {
-            const taskIndex = currentIndex++;
-            const task = tasks[taskIndex];
-            try {
-                results[taskIndex] = await task();
-            } catch (error) {
-                // Store error to review later if needed, or handle it
-                results[taskIndex] = error;
-                console.error(`Task at index ${taskIndex} failed:`, error.message);
-            }
-        }
-    };
-
-    // Create and start the workers.
-    const workers = Array(concurrency).fill(null).map(() => worker());
-
-    // Wait for all workers to complete.
-    await Promise.all(workers);
-
-    return results;
 }
 
 /**

@@ -27,6 +27,7 @@ const {
     DEFAULT_PROPERTY_NAME,
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
+const { runPromisesWithConcurrency } = require('./promise_concurrency');
 
 // --- Configuration ---
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -717,36 +718,6 @@ async function aggregateSigSnapshot(sigId, targetDate) {
             parseInt(agg.active_contributors) || 0, parseInt(agg.new_commits) || 0,
             parseInt(agg.lines_added) || 0, parseInt(agg.lines_deleted) || 0]
     );
-}
-
-// --- Concurrency Helper ---
-async function runPromisesWithConcurrency(tasks, concurrency) {
-    const results = [];
-    const failures = [];
-    let currentIndex = 0;
-
-    const worker = async () => {
-        while (currentIndex < tasks.length) {
-            const taskIndex = currentIndex++;
-            const task = tasks[taskIndex];
-            try {
-                results[taskIndex] = await task();
-            } catch (error) {
-                results[taskIndex] = error;
-                failures.push(error);
-                console.error(`Task at index ${taskIndex} failed:`, error.message);
-            }
-        }
-    };
-
-    const workers = Array(concurrency).fill(null).map(() => worker());
-    await Promise.all(workers);
-
-    if (failures.length > 0) {
-        throw new AggregateError(failures, `${failures.length} task(s) failed.`);
-    }
-
-    return results;
 }
 
 // --- Progress Checkpoint Functions ---

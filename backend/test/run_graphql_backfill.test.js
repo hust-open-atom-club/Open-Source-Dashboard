@@ -6,8 +6,8 @@ const {
     fetchCommitsViaGraphQL,
     fetchRepoStatsViaGraphQL,
     formatDate,
-    runPromisesWithConcurrency,
 } = require('../run_graphql_backfill');
+const { runPromisesWithConcurrency } = require('../promise_concurrency');
 
 test('commit collection propagates GraphQL request failures instead of returning zeros', async () => {
     const requestError = new Error('Bad credentials');
