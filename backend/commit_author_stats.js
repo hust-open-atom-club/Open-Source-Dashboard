@@ -1,4 +1,8 @@
-const { rebuildContributorDailyActivities } = require('./contributor_daily_aggregation');
+const {
+    acquireContributorDailyAggregationLock,
+    rebuildContributorDailyActivities,
+} = require('./contributor_daily_aggregation');
+const { upsertContributor } = require('./contributor_identity');
 
 async function storeCommitAuthorStats({ pool, repoId, snapshotDate, authorStats = {} }) {
     const client = await pool.connect();
@@ -14,6 +18,8 @@ async function storeCommitAuthorStats({ pool, repoId, snapshotDate, authorStats 
             throw new Error(`Tracked repository ${repoId} not found.`);
         }
         const orgId = repoResult.rows[0].org_id;
+
+        await acquireContributorDailyAggregationLock(client, orgId, snapshotDate);
 
         const previousAuthorsResult = await client.query(
             `SELECT contributor_id
@@ -38,19 +44,12 @@ async function storeCommitAuthorStats({ pool, repoId, snapshotDate, authorStats 
         );
 
         for (const [username, stats] of Object.entries(authorStats)) {
-            const contributorResult = await client.query(
-                `INSERT INTO contributors
-                 (github_username, github_id, avatar_url, first_seen_date, last_seen_date)
-                 VALUES ($1, $2, $3, $4, $4)
-                 ON CONFLICT (github_username) DO UPDATE
-                 SET last_seen_date = GREATEST(contributors.last_seen_date, EXCLUDED.last_seen_date),
-                     avatar_url = COALESCE(EXCLUDED.avatar_url, contributors.avatar_url),
-                     github_id = COALESCE(contributors.github_id, EXCLUDED.github_id),
-                     updated_at = NOW()
-                 RETURNING id`,
-                [username, stats.github_id, stats.avatar_url, snapshotDate]
-            );
-            const contributorId = contributorResult.rows[0].id;
+            const contributorId = await upsertContributor(client, {
+                username,
+                githubId: stats.github_id,
+                avatarUrl: stats.avatar_url,
+                snapshotDate,
+            });
             affectedContributorIds.add(contributorId);
 
             await client.query(

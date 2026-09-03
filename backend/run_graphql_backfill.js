@@ -33,7 +33,11 @@ const {
     getPrimaryRateLimitWaitMs,
 } = require('./github_rate_limit');
 const { storeCommitAuthorStats } = require('./commit_author_stats');
-const { rebuildContributorDailyActivities } = require('./contributor_daily_aggregation');
+const {
+    acquireContributorDailyAggregationLock,
+    rebuildContributorDailyActivities,
+} = require('./contributor_daily_aggregation');
+const { upsertContributor } = require('./contributor_identity');
 
 // --- Configuration ---
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -457,24 +461,19 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails, d
             throw new Error('Organization not found');
         }
         const orgId = orgResult.rows[0].id;
+        await acquireContributorDailyAggregationLock(client, orgId, dateStr);
+
         const affectedContributorIds = new Set();
 
         for (const contributor of humanContributorDetails) {
             try {
                 // 1. 插入或更新贡献者基本信息
-                const contributorResult = await client.query(
-                    `INSERT INTO contributors (github_username, github_id, avatar_url, first_seen_date, last_seen_date)
-                     VALUES ($1, $2, $3, $4, $4)
-                     ON CONFLICT (github_username) DO UPDATE
-                     SET last_seen_date = GREATEST(contributors.last_seen_date, EXCLUDED.last_seen_date),
-                         avatar_url = COALESCE(contributors.avatar_url, EXCLUDED.avatar_url),
-                         github_id = COALESCE(contributors.github_id, EXCLUDED.github_id),
-                         updated_at = NOW()
-                     RETURNING id`,
-                    [contributor.username, contributor.github_id, contributor.avatar_url, dateStr]
-                );
-
-                const contributorId = contributorResult.rows[0].id;
+                const contributorId = await upsertContributor(client, {
+                    username: contributor.username,
+                    githubId: contributor.github_id,
+                    avatarUrl: contributor.avatar_url,
+                    snapshotDate: dateStr,
+                });
                 affectedContributorIds.add(contributorId);
 
                 // 2. 插入贡献者-仓库活动

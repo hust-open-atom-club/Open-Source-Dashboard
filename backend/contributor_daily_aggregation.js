@@ -1,12 +1,15 @@
-async function rebuildContributorDailyActivities(client, orgId, snapshotDate, contributorIds) {
-    if (contributorIds.length === 0) return;
-
+async function acquireContributorDailyAggregationLock(client, orgId, snapshotDate) {
     // All repository writers for one organization/date use the same transaction-level
-    // lock. The final writer therefore observes every previously committed repo fact.
+    // lock before modifying contributor rows. This prevents deadlocks between writers
+    // and ensures the final writer observes every previously committed repo fact.
     await client.query(
         'SELECT pg_advisory_xact_lock($1, hashtext($2::text))',
         [orgId, snapshotDate]
     );
+}
+
+async function rebuildContributorDailyActivities(client, orgId, snapshotDate, contributorIds) {
+    if (contributorIds.length === 0) return;
 
     await client.query(
         `INSERT INTO contributor_daily_activities
@@ -49,5 +52,6 @@ async function rebuildContributorDailyActivities(client, orgId, snapshotDate, co
 }
 
 module.exports = {
+    acquireContributorDailyAggregationLock,
     rebuildContributorDailyActivities,
 };
