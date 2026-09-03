@@ -22,6 +22,10 @@ const {
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
 const { runPromisesWithConcurrency } = require('./promise_concurrency');
+const {
+    MAX_RATE_LIMIT_RETRIES,
+    getPrimaryRateLimitWaitMs,
+} = require('./github_rate_limit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -273,7 +277,7 @@ async function githubRest(endpoint, params = {}) {
  * @param {object} variables Variables for the query.
  * @returns {Promise<object>} The data portion of the response.
  */
-async function githubGraphQL(query, variables = {}) {
+async function githubGraphQL(query, variables = {}, retryCount = 0) {
     if (!GITHUB_TOKEN) {
         throw new Error("GITHUB_TOKEN is not set in environment variables.");
     }
@@ -302,16 +306,11 @@ async function githubGraphQL(query, variables = {}) {
 
         return response.data.data;
     } catch (error) {
-        if (error.response && error.response.status === 403) {
-            // Rate limit handling
-            const resetTime = error.response.headers['x-ratelimit-reset'];
-            if (resetTime) {
-                const resetDate = new Date(parseInt(resetTime) * 1000);
-                const waitTime = Math.max(0, resetDate.getTime() - Date.now() + 5000);
-                console.warn(`GraphQL Rate limit exceeded. Waiting ${Math.ceil(waitTime / 1000)} seconds...`);
-                await delay(waitTime);
-                return githubGraphQL(query, variables); // Retry
-            }
+        const waitTime = getPrimaryRateLimitWaitMs(error);
+        if (waitTime !== null && retryCount < MAX_RATE_LIMIT_RETRIES) {
+            console.warn(`GraphQL primary rate limit exhausted. Waiting ${Math.ceil(waitTime / 1000)} seconds...`);
+            await delay(waitTime);
+            return githubGraphQL(query, variables, retryCount + 1);
         }
         throw error;
     }

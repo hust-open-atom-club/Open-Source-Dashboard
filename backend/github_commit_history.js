@@ -1,5 +1,9 @@
 const axios = require('axios');
 const { isBotContributor } = require('./contributor_filters');
+const {
+    MAX_RATE_LIMIT_RETRIES,
+    getPrimaryRateLimitWaitMs,
+} = require('./github_rate_limit');
 
 const DEFAULT_ORG_NAME = 'hust-open-atom-club';
 const GRAPHQL_ENDPOINT = 'https://api.github.com/graphql';
@@ -28,43 +32,45 @@ function createEmptyCommitStats() {
     };
 }
 
-async function defaultGraphQLClient(query, variables = {}) {
+async function defaultGraphQLClient(query, variables = {}, options = {}) {
     const token = process.env.GITHUB_TOKEN;
     if (!token) {
         throw new Error('GITHUB_TOKEN is not set in environment variables.');
     }
 
-    try {
-        const response = await axios.post(
-            GRAPHQL_ENDPOINT,
-            { query, variables },
-            {
-                timeout: 60000,
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                },
+    const request = options.request || axios.post;
+    const sleep = options.delay || delay;
+
+    for (let retryCount = 0; ; retryCount++) {
+        try {
+            const response = await request(
+                GRAPHQL_ENDPOINT,
+                { query, variables },
+                {
+                    timeout: 60000,
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        'Content-Type': 'application/json',
+                    },
+                }
+            );
+
+            if (response.data.errors) {
+                const errorMessages = response.data.errors.map((error) => error.message).join(', ');
+                throw new Error(`GraphQL Error: ${errorMessages}`);
             }
-        );
 
-        if (response.data.errors) {
-            const errorMessages = response.data.errors.map((error) => error.message).join(', ');
-            throw new Error(`GraphQL Error: ${errorMessages}`);
-        }
-
-        return response.data.data;
-    } catch (error) {
-        if (error.response?.status === 403) {
-            const resetTime = Number.parseInt(error.response.headers['x-ratelimit-reset'], 10);
-            if (Number.isFinite(resetTime)) {
-                const waitTime = Math.max(0, resetTime * 1000 - Date.now() + 5000);
-                console.warn(`[GraphQL Commits] Rate limit exceeded. Waiting ${Math.ceil(waitTime / 1000)} seconds...`);
-                await delay(waitTime);
-                return defaultGraphQLClient(query, variables);
+            return response.data.data;
+        } catch (error) {
+            const waitTime = getPrimaryRateLimitWaitMs(error);
+            if (waitTime !== null && retryCount < MAX_RATE_LIMIT_RETRIES) {
+                console.warn(`[GraphQL Commits] Primary rate limit exhausted. Waiting ${Math.ceil(waitTime / 1000)} seconds...`);
+                await sleep(waitTime);
+                continue;
             }
-        }
 
-        throw error;
+            throw error;
+        }
     }
 }
 

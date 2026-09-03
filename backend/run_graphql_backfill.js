@@ -28,6 +28,10 @@ const {
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
 const { runPromisesWithConcurrency } = require('./promise_concurrency');
+const {
+    MAX_RATE_LIMIT_RETRIES,
+    getPrimaryRateLimitWaitMs,
+} = require('./github_rate_limit');
 
 // --- Configuration ---
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -97,7 +101,7 @@ function getScopedProgressFile(startDate, endDate) {
 }
 
 // --- GraphQL API with Adaptive Rate Limiting ---
-async function githubGraphQL(query, variables = {}) {
+async function githubGraphQL(query, variables = {}, retryCount = 0) {
     if (!GITHUB_TOKEN) {
         throw new Error("GITHUB_TOKEN is not set in environment variables.");
     }
@@ -146,17 +150,13 @@ async function githubGraphQL(query, variables = {}) {
 
         return response.data.data;
     } catch (error) {
-        if (error.response && error.response.status === 403) {
-            const resetTime = error.response.headers['x-ratelimit-reset'];
-            if (resetTime) {
-                const resetDate = new Date(parseInt(resetTime) * 1000);
-                const waitTime = Math.max(0, resetDate.getTime() - Date.now() + 5000);
-                console.warn(`[Rate Limit] Exceeded! Waiting ${Math.ceil(waitTime / 1000)} seconds until reset...`);
-                rateLimitRemaining = 0;
-                await delay(waitTime);
-                rateLimitRemaining = 5000; // Reset after waiting
-                return githubGraphQL(query, variables);
-            }
+        const waitTime = getPrimaryRateLimitWaitMs(error);
+        if (waitTime !== null && retryCount < MAX_RATE_LIMIT_RETRIES) {
+            console.warn(`[Rate Limit] Primary limit exhausted. Waiting ${Math.ceil(waitTime / 1000)} seconds...`);
+            rateLimitRemaining = 0;
+            await delay(waitTime);
+            rateLimitRemaining = 5000;
+            return githubGraphQL(query, variables, retryCount + 1);
         }
         throw error;
     }

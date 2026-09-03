@@ -8,6 +8,110 @@ const {
     formatDate,
 } = require('../run_graphql_backfill');
 const { runPromisesWithConcurrency } = require('../promise_concurrency');
+const {
+    defaultGraphQLClient,
+} = require('../github_commit_history');
+const {
+    getPrimaryRateLimitWaitMs,
+} = require('../github_rate_limit');
+
+test('only a confirmed primary rate-limit 403 is retryable', () => {
+    const resetTime = Math.floor(Date.now() / 1000) + 60;
+
+    assert.equal(getPrimaryRateLimitWaitMs({
+        response: {
+            status: 403,
+            headers: {
+                'x-ratelimit-remaining': '4999',
+                'x-ratelimit-reset': String(resetTime),
+            },
+        },
+    }), null);
+
+    assert.equal(typeof getPrimaryRateLimitWaitMs({
+        response: {
+            status: 403,
+            headers: {
+                'x-ratelimit-remaining': '0',
+                'x-ratelimit-reset': String(resetTime),
+            },
+        },
+    }), 'number');
+});
+
+test('the default GraphQL client bounds primary rate-limit retries', async () => {
+    const previousToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = 'test-token';
+    let calls = 0;
+    const rateLimitError = Object.assign(new Error('rate limit exceeded'), {
+        response: {
+            status: 403,
+            headers: {
+                'x-ratelimit-remaining': '0',
+                'x-ratelimit-reset': '0',
+            },
+        },
+    });
+
+    try {
+        await assert.rejects(
+            defaultGraphQLClient('query Test { viewer { login } }', {}, {
+                request: async () => {
+                    calls++;
+                    throw rateLimitError;
+                },
+                delay: async () => {},
+            }),
+            (error) => error === rateLimitError
+        );
+    } finally {
+        if (previousToken === undefined) {
+            delete process.env.GITHUB_TOKEN;
+        } else {
+            process.env.GITHUB_TOKEN = previousToken;
+        }
+    }
+
+    assert.equal(calls, 2);
+});
+
+test('the default GraphQL client does not retry permission 403 responses', async () => {
+    const previousToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = 'test-token';
+    let calls = 0;
+    let delays = 0;
+    const permissionError = Object.assign(new Error('resource protected by SAML SSO'), {
+        response: {
+            status: 403,
+            headers: {
+                'x-ratelimit-remaining': '4999',
+                'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 3600),
+            },
+        },
+    });
+
+    try {
+        await assert.rejects(
+            defaultGraphQLClient('query Test { viewer { login } }', {}, {
+                request: async () => {
+                    calls++;
+                    throw permissionError;
+                },
+                delay: async () => { delays++; },
+            }),
+            (error) => error === permissionError
+        );
+    } finally {
+        if (previousToken === undefined) {
+            delete process.env.GITHUB_TOKEN;
+        } else {
+            process.env.GITHUB_TOKEN = previousToken;
+        }
+    }
+
+    assert.equal(calls, 1);
+    assert.equal(delays, 0);
+});
 
 test('commit collection propagates GraphQL request failures instead of returning zeros', async () => {
     const requestError = new Error('Bad credentials');
