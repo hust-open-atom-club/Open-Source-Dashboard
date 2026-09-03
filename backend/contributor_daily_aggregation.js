@@ -1,7 +1,14 @@
-async function acquireContributorDailyAggregationLock(client, orgId, snapshotDate) {
-    // All repository writers for one organization/date use the same transaction-level
-    // lock before modifying contributor rows. This prevents deadlocks between writers
-    // and ensures the final writer observes every previously committed repo fact.
+async function acquireContributorWriteLocks(client, orgId, snapshotDate) {
+    // Contributor identities are global across snapshot dates. Serialize identity writes
+    // for one organization before taking the date-scoped aggregation lock so concurrent
+    // backfill tasks cannot deadlock while updating the same contributors in a different order.
+    await client.query(
+        "SELECT pg_advisory_xact_lock(hashtext('osd:contributor-identity'), $1)",
+        [orgId]
+    );
+
+    // The date-scoped lock makes the final writer observe every previously committed
+    // repository fact before rebuilding the organization-level daily aggregate.
     await client.query(
         'SELECT pg_advisory_xact_lock($1, hashtext($2::text))',
         [orgId, snapshotDate]
@@ -52,6 +59,6 @@ async function rebuildContributorDailyActivities(client, orgId, snapshotDate, co
 }
 
 module.exports = {
-    acquireContributorDailyAggregationLock,
+    acquireContributorWriteLocks,
     rebuildContributorDailyActivities,
 };

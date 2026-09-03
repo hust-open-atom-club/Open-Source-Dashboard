@@ -74,15 +74,23 @@ test('commit authors are persisted and organization daily totals are rebuilt', a
     const repoActivityInsert = database.queries.find((query) => query.sql.startsWith('INSERT INTO contributor_repo_activities'));
     assert.deepEqual(repoActivityInsert.params, [42, 11, '2026-09-02', 2, 15, 4]);
 
-    const lockQuery = database.queries.find((query) => query.sql.includes('pg_advisory_xact_lock'));
-    assert.deepEqual(lockQuery.params, [7, '2026-09-02']);
-    const lockIndex = database.queries.indexOf(lockQuery);
+    const identityLockQuery = database.queries.find((query) =>
+        query.sql.includes("hashtext('osd:contributor-identity')")
+    );
+    assert.deepEqual(identityLockQuery.params, [7]);
+    const dailyLockQuery = database.queries.find((query) =>
+        query.sql.includes('hashtext($2::text)')
+    );
+    assert.deepEqual(dailyLockQuery.params, [7, '2026-09-02']);
+    const identityLockIndex = database.queries.indexOf(identityLockQuery);
+    const dailyLockIndex = database.queries.indexOf(dailyLockQuery);
     const firstContributorWriteIndex = database.queries.findIndex((query) =>
         query.sql.startsWith('UPDATE contributor_repo_activities') ||
         query.sql.startsWith('UPDATE contributors') ||
         query.sql.startsWith('INSERT INTO contributors')
     );
-    assert.ok(lockIndex < firstContributorWriteIndex);
+    assert.ok(identityLockIndex < dailyLockIndex);
+    assert.ok(dailyLockIndex < firstContributorWriteIndex);
 
     assert.match(contributorInsert.sql, /first_seen_date = LEAST/);
 

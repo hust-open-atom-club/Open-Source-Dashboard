@@ -34,7 +34,7 @@ const {
 } = require('./github_rate_limit');
 const { storeCommitAuthorStats } = require('./commit_author_stats');
 const {
-    acquireContributorDailyAggregationLock,
+    acquireContributorWriteLocks,
     rebuildContributorDailyActivities,
 } = require('./contributor_daily_aggregation');
 const { upsertContributor } = require('./contributor_identity');
@@ -461,7 +461,7 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails, d
             throw new Error('Organization not found');
         }
         const orgId = orgResult.rows[0].id;
-        await acquireContributorDailyAggregationLock(client, orgId, dateStr);
+        await acquireContributorWriteLocks(client, orgId, dateStr);
 
         const affectedContributorIds = new Set();
 

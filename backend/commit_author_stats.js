@@ -1,5 +1,5 @@
 const {
-    acquireContributorDailyAggregationLock,
+    acquireContributorWriteLocks,
     rebuildContributorDailyActivities,
 } = require('./contributor_daily_aggregation');
 const { upsertContributor } = require('./contributor_identity');
@@ -19,7 +19,7 @@ async function storeCommitAuthorStats({ pool, repoId, snapshotDate, authorStats 
         }
         const orgId = repoResult.rows[0].org_id;
 
-        await acquireContributorDailyAggregationLock(client, orgId, snapshotDate);
+        await acquireContributorWriteLocks(client, orgId, snapshotDate);
 
         const previousAuthorsResult = await client.query(
             `SELECT contributor_id

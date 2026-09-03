@@ -342,14 +342,22 @@ test('the API contributor writer shares the locked full daily aggregation path',
         issues_closed: 0,
     }], { connect: async () => client });
 
-    const lockQuery = queries.find((query) => query.sql.includes('pg_advisory_xact_lock'));
-    assert.deepEqual(lockQuery.params, [7, '2026-09-02']);
-    const lockIndex = queries.indexOf(lockQuery);
+    const identityLockQuery = queries.find((query) =>
+        query.sql.includes("hashtext('osd:contributor-identity')")
+    );
+    assert.deepEqual(identityLockQuery.params, [7]);
+    const dailyLockQuery = queries.find((query) =>
+        query.sql.includes('hashtext($2::text)')
+    );
+    assert.deepEqual(dailyLockQuery.params, [7, '2026-09-02']);
+    const identityLockIndex = queries.indexOf(identityLockQuery);
+    const dailyLockIndex = queries.indexOf(dailyLockQuery);
     const firstContributorWriteIndex = queries.findIndex((query) =>
         query.sql.startsWith('UPDATE contributors') ||
         query.sql.startsWith('INSERT INTO contributors')
     );
-    assert.ok(lockIndex < firstContributorWriteIndex);
+    assert.ok(identityLockIndex < dailyLockIndex);
+    assert.ok(dailyLockIndex < firstContributorWriteIndex);
 
     const dailyInsert = queries.find((query) => query.sql.startsWith('INSERT INTO contributor_daily_activities'));
     assert.match(dailyInsert.sql, /SUM\(cra\.commits_count\)/);
