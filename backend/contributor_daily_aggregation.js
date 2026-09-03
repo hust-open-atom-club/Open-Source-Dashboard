@@ -15,6 +15,22 @@ async function acquireContributorWriteLocks(client, orgId, snapshotDate) {
     );
 }
 
+async function deleteEmptyContributorRepoActivities(client, repoId, snapshotDate) {
+    await client.query(
+        `DELETE FROM contributor_repo_activities
+         WHERE repo_id = $1
+           AND snapshot_date = $2
+           AND COALESCE(prs_opened, 0) = 0
+           AND COALESCE(prs_closed, 0) = 0
+           AND COALESCE(issues_opened, 0) = 0
+           AND COALESCE(issues_closed, 0) = 0
+           AND COALESCE(commits_count, 0) = 0
+           AND COALESCE(lines_added, 0) = 0
+           AND COALESCE(lines_deleted, 0) = 0`,
+        [repoId, snapshotDate]
+    );
+}
+
 async function rebuildContributorDailyActivities(client, orgId, snapshotDate, contributorIds) {
     if (contributorIds.length === 0) return;
 
@@ -72,7 +88,27 @@ async function rebuildContributorDailyActivities(client, orgId, snapshotDate, co
     );
 }
 
+async function rebuildRepoActiveContributorCount(client, repoId, snapshotDate) {
+    await client.query(
+        `UPDATE repo_snapshots
+         SET active_contributors = (
+             SELECT COUNT(DISTINCT cra.contributor_id)::integer
+             FROM contributor_repo_activities cra
+             WHERE cra.repo_id = $1
+               AND cra.snapshot_date = $2
+               AND (cra.prs_opened <> 0 OR cra.prs_closed <> 0
+                 OR cra.issues_opened <> 0 OR cra.issues_closed <> 0
+                 OR cra.commits_count <> 0 OR cra.lines_added <> 0
+                 OR cra.lines_deleted <> 0)
+         )
+         WHERE repo_id = $1 AND snapshot_date = $2`,
+        [repoId, snapshotDate]
+    );
+}
+
 module.exports = {
     acquireContributorWriteLocks,
+    deleteEmptyContributorRepoActivities,
     rebuildContributorDailyActivities,
+    rebuildRepoActiveContributorCount,
 };

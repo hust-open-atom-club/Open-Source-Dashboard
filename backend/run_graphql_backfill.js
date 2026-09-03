@@ -35,7 +35,9 @@ const {
 const { storeCommitAuthorStats } = require('./commit_author_stats');
 const {
     acquireContributorWriteLocks,
+    deleteEmptyContributorRepoActivities,
     rebuildContributorDailyActivities,
+    rebuildRepoActiveContributorCount,
 } = require('./contributor_daily_aggregation');
 const { upsertContributor } = require('./contributor_identity');
 
@@ -438,10 +440,9 @@ async function storeRepoApiStatsForDate(repoId, repoName, dateStr, stats, contri
             [repoId, dateStr, apiMetrics.new_prs, apiMetrics.closed_merged_prs, apiMetrics.new_issues, apiMetrics.closed_issues, apiMetrics.active_contributors]
         );
 
-        // 保存贡献者详细信息
-        if (contributorDetails.length > 0) {
-            await storeContributorActivities(repoId, dateStr, contributorDetails);
-        }
+        // Reconcile contributor facts even when the current result is empty so reruns
+        // remove stale PR/issue authors and restore the combined active-contributor count.
+        await storeContributorActivities(repoId, dateStr, contributorDetails);
     } catch (error) {
         console.error(`[GraphQL] Error storing stats for ${repoName}@${dateStr}:`, error.message);
         throw error;
@@ -450,7 +451,6 @@ async function storeRepoApiStatsForDate(repoId, repoName, dateStr, stats, contri
 
 async function storeContributorActivities(repoId, dateStr, contributorDetails, databasePool = pool) {
     const humanContributorDetails = filterBotContributors(contributorDetails);
-    if (humanContributorDetails.length === 0) return;
 
     const client = await databasePool.connect();
     try {
@@ -463,7 +463,26 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails, d
         const orgId = orgResult.rows[0].id;
         await acquireContributorWriteLocks(client, orgId, dateStr);
 
-        const affectedContributorIds = new Set();
+        const previousContributorsResult = await client.query(
+            `SELECT contributor_id
+             FROM contributor_repo_activities
+             WHERE repo_id = $1
+               AND snapshot_date = $2`,
+            [repoId, dateStr]
+        );
+        const affectedContributorIds = new Set(
+            previousContributorsResult.rows.map((row) => row.contributor_id)
+        );
+
+        await client.query(
+            `UPDATE contributor_repo_activities
+             SET prs_opened = 0,
+                 prs_closed = 0,
+                 issues_opened = 0,
+                 issues_closed = 0
+             WHERE repo_id = $1 AND snapshot_date = $2`,
+            [repoId, dateStr]
+        );
 
         for (const contributor of humanContributorDetails) {
             try {
@@ -495,6 +514,8 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails, d
             }
         }
 
+        await deleteEmptyContributorRepoActivities(client, repoId, dateStr);
+
         // Rebuild org-level daily contributor stats from repo-level facts so reruns stay idempotent.
         await rebuildContributorDailyActivities(
             client,
@@ -502,6 +523,7 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails, d
             dateStr,
             Array.from(affectedContributorIds)
         );
+        await rebuildRepoActiveContributorCount(client, repoId, dateStr);
 
         await client.query('COMMIT');
     } catch (error) {

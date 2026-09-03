@@ -109,6 +109,13 @@ test('commit authors are persisted and organization daily totals are rebuilt', a
     );
     assert.deepEqual(dailyDelete.params, [7, '2026-09-02', [41, 42]]);
     assert.ok(database.queries.indexOf(dailyDelete) < database.queries.indexOf(dailyInsert));
+
+    const activeContributorUpdate = database.queries.find((query) =>
+        query.sql.startsWith('UPDATE repo_snapshots')
+    );
+    assert.deepEqual(activeContributorUpdate.params, [11, '2026-09-02']);
+    assert.match(activeContributorUpdate.sql, /COUNT\(DISTINCT cra\.contributor_id\)/);
+    assert.ok(database.queries.indexOf(dailyInsert) < database.queries.indexOf(activeContributorUpdate));
 });
 
 test('commit author persistence rolls back and propagates write failures', async () => {

@@ -29,7 +29,9 @@ const {
 const { storeCommitAuthorStats } = require('./commit_author_stats');
 const {
     acquireContributorWriteLocks,
+    deleteEmptyContributorRepoActivities,
     rebuildContributorDailyActivities,
+    rebuildRepoActiveContributorCount,
 } = require('./contributor_daily_aggregation');
 const { upsertContributor } = require('./contributor_identity');
 
@@ -328,7 +330,7 @@ async function githubGraphQL(query, variables = {}, retryCount = 0) {
  * @param {string} repoName Repository name
  * @param {Date} startDate Start of date range
  * @param {Date} endDate End of date range
- * @returns {Promise<Map<string, object>>} Map of date string -> stats
+ * @returns {Promise<{statsMap: Map<string, object>, contributorDetailsMap: Map<string, Map>}>}
  */
 async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
     const startDateStr = formatDate(startDate);
@@ -338,17 +340,41 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
 
     // Initialize result map with all dates in range
     const statsMap = new Map();
+    const contributorDetailsMap = new Map();
     const currentDate = new Date(startDate);
     while (currentDate <= endDate) {
-        statsMap.set(formatDate(currentDate), {
+        const dateKey = formatDate(currentDate);
+        statsMap.set(dateKey, {
             new_prs: 0,
             closed_merged_prs: 0,
             new_issues: 0,
             closed_issues: 0,
             active_contributors: new Set(),
         });
+        contributorDetailsMap.set(dateKey, new Map());
         currentDate.setDate(currentDate.getDate() + 1);
     }
+
+    const recordContributorActivity = (dateKey, author, metric) => {
+        if (!statsMap.has(dateKey) || !author?.login || isBotContributor(author.login)) {
+            return;
+        }
+
+        statsMap.get(dateKey).active_contributors.add(author.login);
+        const contributorsForDate = contributorDetailsMap.get(dateKey);
+        if (!contributorsForDate.has(author.login)) {
+            contributorsForDate.set(author.login, {
+                username: author.login,
+                avatar_url: author.avatarUrl || null,
+                github_id: author.databaseId || null,
+                prs_opened: 0,
+                prs_closed: 0,
+                issues_opened: 0,
+                issues_closed: 0,
+            });
+        }
+        contributorsForDate.get(author.login)[metric]++;
+    };
 
     // GraphQL query to fetch PRs and Issues
     const query = `
@@ -362,7 +388,11 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                         closedAt
                         mergedAt
                         state
-                        author { login }
+                        author {
+                            login
+                            avatarUrl
+                            ... on User { databaseId }
+                        }
                     }
                 }
                 issues(first: 100, after: $issueCursor, orderBy: {field: CREATED_AT, direction: DESC}) {
@@ -372,7 +402,11 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                         createdAt
                         closedAt
                         state
-                        author { login }
+                        author {
+                            login
+                            avatarUrl
+                            ... on User { databaseId }
+                        }
                     }
                 }
             }
@@ -395,7 +429,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
 
             if (!data.repository) {
                 console.warn(`[GraphQL] Repository ${repoName} not found or inaccessible.`);
-                return statsMap;
+                return { statsMap, contributorDetailsMap };
             }
 
             const prs = data.repository.pullRequests;
@@ -409,15 +443,14 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                 if (createdDate && createdDate >= startDateStr && createdDate <= endDateStr) {
                     if (statsMap.has(createdDate)) {
                         statsMap.get(createdDate).new_prs++;
-                        if (pr.author?.login && !isBotContributor(pr.author.login)) {
-                            statsMap.get(createdDate).active_contributors.add(pr.author.login);
-                        }
+                        recordContributorActivity(createdDate, pr.author, 'prs_opened');
                     }
                 }
 
                 if (closedDate && closedDate >= startDateStr && closedDate <= endDateStr) {
                     if (statsMap.has(closedDate)) {
                         statsMap.get(closedDate).closed_merged_prs++;
+                        recordContributorActivity(closedDate, pr.author, 'prs_closed');
                     }
                 }
 
@@ -458,15 +491,14 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                 if (createdDate && createdDate >= startDateStr && createdDate <= endDateStr) {
                     if (statsMap.has(createdDate)) {
                         statsMap.get(createdDate).new_issues++;
-                        if (issue.author?.login && !isBotContributor(issue.author.login)) {
-                            statsMap.get(createdDate).active_contributors.add(issue.author.login);
-                        }
+                        recordContributorActivity(createdDate, issue.author, 'issues_opened');
                     }
                 }
 
                 if (closedDate && closedDate >= startDateStr && closedDate <= endDateStr) {
                     if (statsMap.has(closedDate)) {
                         statsMap.get(closedDate).closed_issues++;
+                        recordContributorActivity(closedDate, issue.author, 'issues_closed');
                     }
                 }
 
@@ -485,11 +517,11 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
         }
 
         console.log(`[GraphQL] ${repoName}: Fetched ${totalPrsFetched} PRs for ${totalIssuesFetched} Issues.`);
-        return statsMap;
+        return { statsMap, contributorDetailsMap };
 
     } catch (error) {
         console.error(`[GraphQL] Error fetching stats for ${repoName}:`, error.message);
-        return statsMap;
+        return { statsMap, contributorDetailsMap };
     }
 }
 
@@ -500,7 +532,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
  * @param {string} dateStr Date string (YYYY-MM-DD)
  * @param {object} stats Stats object with new_prs, closed_merged_prs, etc.
  */
-async function storeRepoApiStatsForDate(repoId, repoName, dateStr, stats) {
+async function storeRepoApiStatsForDate(repoId, repoName, dateStr, stats, contributorDetails = []) {
     const apiMetrics = {
         new_prs: stats.new_prs || 0,
         closed_merged_prs: stats.closed_merged_prs || 0,
@@ -522,6 +554,7 @@ async function storeRepoApiStatsForDate(repoId, repoName, dateStr, stats) {
                  created_at = NOW()`,
             [repoId, dateStr, apiMetrics.new_prs, apiMetrics.closed_merged_prs, apiMetrics.new_issues, apiMetrics.closed_issues, apiMetrics.active_contributors]
         );
+        await storeContributorActivities(repoId, dateStr, contributorDetails);
     } catch (error) {
         console.error(`[GraphQL] Error storing stats for ${repoName}@${dateStr}:`, error.message);
     }
@@ -595,7 +628,6 @@ async function fetchCommitHistoryForRepositories(repositories, startDate, endDat
  */
 async function storeContributorActivities(repoId, dateStr, contributorDetails) {
     const humanContributorDetails = filterBotContributors(contributorDetails);
-    if (humanContributorDetails.length === 0) return;
 
     const client = await pool.connect();
     try {
@@ -608,7 +640,26 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails) {
         const orgId = orgResult.rows[0].id;
         await acquireContributorWriteLocks(client, orgId, dateStr);
 
-        const affectedContributorIds = new Set();
+        const previousContributorsResult = await client.query(
+            `SELECT contributor_id
+             FROM contributor_repo_activities
+             WHERE repo_id = $1
+               AND snapshot_date = $2`,
+            [repoId, dateStr]
+        );
+        const affectedContributorIds = new Set(
+            previousContributorsResult.rows.map((row) => row.contributor_id)
+        );
+
+        await client.query(
+            `UPDATE contributor_repo_activities
+             SET prs_opened = 0,
+                 prs_closed = 0,
+                 issues_opened = 0,
+                 issues_closed = 0
+             WHERE repo_id = $1 AND snapshot_date = $2`,
+            [repoId, dateStr]
+        );
 
         for (const contributor of humanContributorDetails) {
             try {
@@ -640,6 +691,8 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails) {
             }
         }
 
+        await deleteEmptyContributorRepoActivities(client, repoId, dateStr);
+
         // Rebuild from repository facts so reruns replace values instead of double-counting.
         await rebuildContributorDailyActivities(
             client,
@@ -647,6 +700,7 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails) {
             dateStr,
             Array.from(affectedContributorIds)
         );
+        await rebuildRepoActiveContributorCount(client, repoId, dateStr);
 
         await client.query('COMMIT');
         console.log(`[Contributors] Stored ${humanContributorDetails.length} contributors for ${dateStr}`);
@@ -800,10 +854,8 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
         );
         console.log(`[API Pipeline] ${repoName}@${targetDateStr}: saved in database (id=${result.rows[0].id})`);
 
-        // 新增：保存贡献者数据
-        if (contributorDetails.length > 0) {
-            await storeContributorActivities(repoId, targetDateStr, contributorDetails);
-        }
+        // Reconcile contributor facts even when this date has no PR/issue authors.
+        await storeContributorActivities(repoId, targetDateStr, contributorDetails);
     } catch (error) {
         console.error(`[API Pipeline] Error storing API data for repo ${repoName}:`, error.message);
         throw error;
@@ -1360,11 +1412,24 @@ async function runBackfillJobWithGraphQL(days = 30) {
         const graphqlTasks = repositories.map(repo => async () => {
             try {
                 // Fetch all stats for this repo in one batch
-                const statsMap = await fetchRepoStatsViaGraphQL(repo.name, startDate, endDate);
+                const { statsMap, contributorDetailsMap } = await fetchRepoStatsViaGraphQL(
+                    repo.name,
+                    startDate,
+                    endDate
+                );
 
                 // Store each date's stats to the database
                 for (const [dateStr, stats] of statsMap) {
-                    await storeRepoApiStatsForDate(repo.id, repo.name, dateStr, stats);
+                    const contributorDetails = contributorDetailsMap.has(dateStr)
+                        ? Array.from(contributorDetailsMap.get(dateStr).values())
+                        : [];
+                    await storeRepoApiStatsForDate(
+                        repo.id,
+                        repo.name,
+                        dateStr,
+                        stats,
+                        contributorDetails
+                    );
                 }
 
                 console.log(`[GraphQL] ${repo.name}: ✅ Stored ${statsMap.size} days of data.`);
@@ -3387,7 +3452,11 @@ app.get('/api/v1/contributors/:username', async (req, res) => {
         // 获取活跃仓库
         const reposResult = await pool.query(
             `SELECT r.name, r.id,
-                    SUM(cra.prs_opened + cra.prs_closed + cra.issues_opened + cra.issues_closed) as total_activities
+                    SUM(COALESCE(cra.prs_opened, 0)
+                      + COALESCE(cra.prs_closed, 0)
+                      + COALESCE(cra.issues_opened, 0)
+                      + COALESCE(cra.issues_closed, 0)
+                      + COALESCE(cra.commits_count, 0)) as total_activities
              FROM contributor_repo_activities cra
              JOIN repositories r ON cra.repo_id = r.id
              WHERE cra.contributor_id = $1 AND cra.snapshot_date >= $2

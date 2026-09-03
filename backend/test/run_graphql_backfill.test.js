@@ -363,8 +363,57 @@ test('the API contributor writer shares the locked full daily aggregation path',
     assert.match(dailyInsert.sql, /SUM\(cra\.commits_count\)/);
     assert.match(dailyInsert.sql, /cra\.commits_count <> 0/);
     assert.deepEqual(dailyInsert.params, [7, '2026-09-02', [42]]);
+
+    const activeContributorUpdate = queries.find((query) =>
+        query.sql.startsWith('UPDATE repo_snapshots')
+    );
+    assert.deepEqual(activeContributorUpdate.params, [11, '2026-09-02']);
+    assert.match(activeContributorUpdate.sql, /COUNT\(DISTINCT cra\.contributor_id\)/);
+    assert.ok(queries.indexOf(dailyInsert) < queries.indexOf(activeContributorUpdate));
     assert.equal(queries.at(-1).sql, 'COMMIT');
     assert.equal(released, true);
+});
+
+test('the API contributor writer clears stale authors and recomputes commit-only activity', async () => {
+    const queries = [];
+    const client = {
+        async query(sql, params = []) {
+            const text = sql.trim();
+            queries.push({ sql: text, params });
+            if (text.startsWith('SELECT id FROM organizations')) {
+                return { rows: [{ id: 7 }] };
+            }
+            if (text.startsWith('SELECT contributor_id')) {
+                return { rows: [{ contributor_id: 41 }] };
+            }
+            return { rows: [], rowCount: 1 };
+        },
+        release() {},
+    };
+
+    await storeContributorActivities(11, '2026-09-02', [], { connect: async () => client });
+
+    const apiClear = queries.find((query) =>
+        query.sql.startsWith('UPDATE contributor_repo_activities')
+    );
+    assert.deepEqual(apiClear.params, [11, '2026-09-02']);
+    assert.match(apiClear.sql, /prs_opened = 0/);
+
+    const emptyActivityDelete = queries.find((query) =>
+        query.sql.startsWith('DELETE FROM contributor_repo_activities')
+    );
+    assert.deepEqual(emptyActivityDelete.params, [11, '2026-09-02']);
+
+    const dailyDelete = queries.find((query) =>
+        query.sql.startsWith('DELETE FROM contributor_daily_activities')
+    );
+    assert.deepEqual(dailyDelete.params, [7, '2026-09-02', [41]]);
+
+    const activeContributorUpdate = queries.find((query) =>
+        query.sql.startsWith('UPDATE repo_snapshots')
+    );
+    assert.deepEqual(activeContributorUpdate.params, [11, '2026-09-02']);
+    assert.equal(queries.at(-1).sql, 'COMMIT');
 });
 
 test('the API contributor writer rolls back and propagates aggregation failures', async () => {
