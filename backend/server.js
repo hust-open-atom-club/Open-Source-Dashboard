@@ -17,6 +17,10 @@ const {
     filterBotContributors,
     buildHumanContributorSqlCondition,
 } = require('./contributor_filters');
+const {
+    DEFAULT_PROPERTY_NAME,
+    syncRepositorySigsFromGitHub,
+} = require('./repository_sig_sync');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,6 +28,28 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_API_BASE = 'https://api.github.com';
 const ORG_NAME = 'hust-open-atom-club';
 const HUMAN_CONTRIBUTOR_SQL = buildHumanContributorSqlCondition('c.github_username');
+const TRACKED_CONTRIBUTOR_ACTIVITY_SQL = `EXISTS (
+    SELECT 1
+    FROM contributor_repo_activities tracked_cra
+    JOIN repositories tracked_repo ON tracked_repo.id = tracked_cra.repo_id
+    WHERE tracked_cra.contributor_id = cda.contributor_id
+      AND tracked_cra.snapshot_date = cda.snapshot_date
+      AND tracked_repo.org_id = cda.org_id
+      AND tracked_repo.sig_id IS NOT NULL
+)`;
+const REPOSITORY_ATTRIBUTED_COMMITS_SQL = `EXISTS (
+    SELECT 1
+    FROM contributor_repo_activities attributed_cra
+    JOIN repositories attributed_repo ON attributed_repo.id = attributed_cra.repo_id
+    WHERE attributed_cra.contributor_id = cda.contributor_id
+      AND attributed_cra.snapshot_date = cda.snapshot_date
+      AND attributed_repo.org_id = cda.org_id
+      AND (
+          attributed_cra.commits_count <> 0
+          OR attributed_cra.lines_added <> 0
+          OR attributed_cra.lines_deleted <> 0
+      )
+)`;
 const isEnvEnabled = (value) => ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
 const ENABLE_STARTUP_CACHE_FLUSH = isEnvEnabled(process.env.ENABLE_STARTUP_CACHE_FLUSH);
 const ENABLE_STARTUP_BACKFILL = isEnvEnabled(process.env.ENABLE_STARTUP_BACKFILL);
@@ -103,7 +129,28 @@ async function connectRedis() {
     }
 }
 
-connectRedis();
+const redisConnectionPromise = connectRedis();
+
+async function synchronizeRepositoryMetadata() {
+    const result = await syncRepositorySigsFromGitHub({
+        pool,
+        githubToken: GITHUB_TOKEN,
+        orgName: ORG_NAME,
+        propertyName: process.env.GITHUB_SIG_PROPERTY || DEFAULT_PROPERTY_NAME,
+    });
+
+    console.log(
+        `[Repository SIG Sync] ${result.repositories} repositories: ` +
+        `${result.tracked} tracked, ${result.untracked} untracked, ${result.changes.length} changed.`
+    );
+
+    if (result.changes.length > 0 && redisClient.isOpen) {
+        await redisClient.flushAll();
+        console.log('[Repository SIG Sync] Redis cache cleared after historical re-aggregation.');
+    }
+
+    return result;
+}
 
 async function retryWithBackoff(fn, retries = 3, delayMs = 1000) {
     let lastError;
@@ -974,6 +1021,8 @@ async function runDailyIngestionJob() {
 
     console.log(`--- Starting Daily Data Ingestion Job for date: ${targetDateStr} ---`);
     try {
+        await synchronizeRepositoryMetadata();
+
         const orgsResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
         const org = orgsResult.rows[0];
         if (!org) {
@@ -981,7 +1030,7 @@ async function runDailyIngestionJob() {
             return;
         }
 
-        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1', [org.id]);
+        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
         const repositories = reposResult.rows;
 
         if (repositories.length === 0) {
@@ -1087,6 +1136,8 @@ async function runDailyIngestionJob() {
 async function runBackfillJob(days = 7) {
     console.log(`--- Starting Backfill Job for the last ${days} days ---`);
     try {
+        await synchronizeRepositoryMetadata();
+
         const orgsResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
         const org = orgsResult.rows[0];
         if (!org) {
@@ -1094,7 +1145,7 @@ async function runBackfillJob(days = 7) {
             return;
         }
 
-        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1', [org.id]);
+        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
         const repositories = reposResult.rows;
 
         if (repositories.length === 0) {
@@ -1272,6 +1323,8 @@ async function runBackfillJobWithGraphQL(days = 30) {
     const startTime = Date.now();
 
     try {
+        await synchronizeRepositoryMetadata();
+
         const orgsResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
         const org = orgsResult.rows[0];
         if (!org) {
@@ -1279,7 +1332,7 @@ async function runBackfillJobWithGraphQL(days = 30) {
             return;
         }
 
-        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1', [org.id]);
+        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
         const repositories = reposResult.rows;
 
         if (repositories.length === 0) {
@@ -1547,7 +1600,8 @@ app.get('/api/v1/organization/summary', async (req, res) => {
              FROM contributor_daily_activities cda
              JOIN contributors c ON cda.contributor_id = c.id
              WHERE cda.org_id = $1 AND cda.snapshot_date >= $2
-               AND ${HUMAN_CONTRIBUTOR_SQL}`,
+               AND ${HUMAN_CONTRIBUTOR_SQL}
+               AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}`,
             [org.id, startDateStr]
         );
 
@@ -3004,6 +3058,7 @@ app.get('/api/v1/organization/day/:date', async (req, res) => {
              FROM repo_snapshots rs
              JOIN repositories r ON rs.repo_id = r.id
              WHERE r.org_id = $1 AND rs.snapshot_date = $2
+               AND r.sig_id IS NOT NULL
                AND (rs.new_prs > 0 OR rs.new_issues > 0 OR rs.new_commits > 0)
              ORDER BY (rs.new_prs + rs.new_issues + rs.new_commits) DESC`,
             [org.id, date]
@@ -3012,14 +3067,21 @@ app.get('/api/v1/organization/day/:date', async (req, res) => {
         // Get contributors active on this date
         const contributorsResult = await pool.query(
             `SELECT c.github_username, c.avatar_url,
-                    cda.prs_opened, cda.prs_closed, cda.issues_opened, cda.issues_closed, cda.commits_count
+                    cda.prs_opened, cda.prs_closed, cda.issues_opened, cda.issues_closed,
+                    CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                         THEN cda.commits_count ELSE 0 END AS commits_count
              FROM contributor_daily_activities cda
              JOIN contributors c ON cda.contributor_id = c.id
              JOIN organizations o ON cda.org_id = o.id
              WHERE o.id = $1 AND cda.snapshot_date = $2
                AND ${HUMAN_CONTRIBUTOR_SQL}
-               AND (cda.prs_opened > 0 OR cda.prs_closed > 0 OR cda.issues_opened > 0 OR cda.issues_closed > 0 OR cda.commits_count > 0)
-             ORDER BY (cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed + cda.commits_count) DESC
+               AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}
+               AND (cda.prs_opened > 0 OR cda.prs_closed > 0 OR cda.issues_opened > 0 OR cda.issues_closed > 0
+                    OR CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                            THEN cda.commits_count ELSE 0 END > 0)
+             ORDER BY (cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed
+                    + CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                           THEN cda.commits_count ELSE 0 END) DESC
              LIMIT 50`,
             [org.id, date]
         );
@@ -3030,7 +3092,10 @@ app.get('/api/v1/organization/day/:date', async (req, res) => {
              JOIN contributors c ON cda.contributor_id = c.id
              WHERE cda.org_id = $1 AND cda.snapshot_date = $2
                AND ${HUMAN_CONTRIBUTOR_SQL}
-               AND (cda.prs_opened > 0 OR cda.prs_closed > 0 OR cda.issues_opened > 0 OR cda.issues_closed > 0 OR cda.commits_count > 0)`,
+               AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}
+               AND (cda.prs_opened > 0 OR cda.prs_closed > 0 OR cda.issues_opened > 0 OR cda.issues_closed > 0
+                    OR CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                            THEN cda.commits_count ELSE 0 END > 0)`,
             [org.id, date]
         );
 
@@ -3170,15 +3235,21 @@ app.get('/api/v1/contributors/leaderboard', async (req, res) => {
                 COALESCE(SUM(cda.issues_opened), 0) as issues_opened,
                 COALESCE(SUM(cda.issues_closed), 0) as issues_closed,
                 COALESCE(SUM(cda.issues_opened + cda.issues_closed), 0) as issues_total,
-                COALESCE(SUM(cda.commits_count), 0) as commits_count,
-                COALESCE(SUM(cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed + cda.commits_count), 0) as total_activities,
+                COALESCE(SUM(CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                                  THEN cda.commits_count ELSE 0 END), 0) as commits_count,
+                COALESCE(SUM(cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed
+                    + CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                           THEN cda.commits_count ELSE 0 END), 0) as total_activities,
                 COUNT(DISTINCT cda.snapshot_date) as active_days
             FROM contributors c
             JOIN contributor_daily_activities cda ON c.id = cda.contributor_id
             WHERE cda.snapshot_date >= $1
               AND ${HUMAN_CONTRIBUTOR_SQL}
+              AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}
             GROUP BY c.id, c.github_username, c.avatar_url, c.first_seen_date, c.last_seen_date
-            HAVING SUM(cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed + cda.commits_count) > 0
+            HAVING SUM(cda.prs_opened + cda.prs_closed + cda.issues_opened + cda.issues_closed
+                + CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                       THEN cda.commits_count ELSE 0 END) > 0
             ORDER BY ${orderBy} DESC
             LIMIT $2
         `;
@@ -3233,7 +3304,8 @@ app.get('/api/v1/contributors/stats', async (req, res) => {
              FROM contributor_daily_activities cda
              JOIN contributors c ON cda.contributor_id = c.id
              WHERE cda.snapshot_date >= $1
-               AND ${HUMAN_CONTRIBUTOR_SQL}`,
+               AND ${HUMAN_CONTRIBUTOR_SQL}
+               AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}`,
             [startDateStr]
         );
 
@@ -3242,7 +3314,15 @@ app.get('/api/v1/contributors/stats', async (req, res) => {
             `SELECT COUNT(*) as count
              FROM contributors
              WHERE first_seen_date >= $1
-               AND ${buildHumanContributorSqlCondition('contributors.github_username')}`,
+               AND ${buildHumanContributorSqlCondition('contributors.github_username')}
+               AND EXISTS (
+                   SELECT 1
+                   FROM contributor_repo_activities tracked_cra
+                   JOIN repositories tracked_repo ON tracked_repo.id = tracked_cra.repo_id
+                   WHERE tracked_cra.contributor_id = contributors.id
+                     AND tracked_cra.snapshot_date >= $1
+                     AND tracked_repo.sig_id IS NOT NULL
+               )`,
             [startDateStr]
         );
 
@@ -3253,6 +3333,7 @@ app.get('/api/v1/contributors/stats', async (req, res) => {
              JOIN contributors c ON cda.contributor_id = c.id
              WHERE cda.snapshot_date >= $1
                AND ${HUMAN_CONTRIBUTOR_SQL}
+               AND ${TRACKED_CONTRIBUTOR_ACTIVITY_SQL}
              GROUP BY cda.snapshot_date
              ORDER BY contributor_count DESC
              LIMIT 1`,
@@ -3311,10 +3392,21 @@ app.get('/api/v1/contributors/:username', async (req, res) => {
         const { startDateStr } = parseRange(range);
 
         const activitiesResult = await pool.query(
-            `SELECT snapshot_date, prs_opened, prs_closed, issues_opened, issues_closed, commits_count
-             FROM contributor_daily_activities
-             WHERE contributor_id = $1 AND snapshot_date >= $2
-             ORDER BY snapshot_date ASC`,
+            `SELECT cda.snapshot_date, cda.prs_opened, cda.prs_closed,
+                    cda.issues_opened, cda.issues_closed,
+                    CASE WHEN ${REPOSITORY_ATTRIBUTED_COMMITS_SQL}
+                         THEN cda.commits_count ELSE 0 END AS commits_count
+             FROM contributor_daily_activities cda
+             WHERE cda.contributor_id = $1 AND cda.snapshot_date >= $2
+               AND EXISTS (
+                   SELECT 1
+                   FROM contributor_repo_activities tracked_cra
+                   JOIN repositories tracked_repo ON tracked_repo.id = tracked_cra.repo_id
+                   WHERE tracked_cra.contributor_id = cda.contributor_id
+                     AND tracked_cra.snapshot_date = cda.snapshot_date
+                     AND tracked_repo.sig_id IS NOT NULL
+               )
+             ORDER BY cda.snapshot_date ASC`,
             [contributor.id, startDateStr]
         );
 
@@ -3325,6 +3417,7 @@ app.get('/api/v1/contributors/:username', async (req, res) => {
              FROM contributor_repo_activities cra
              JOIN repositories r ON cra.repo_id = r.id
              WHERE cra.contributor_id = $1 AND cra.snapshot_date >= $2
+               AND r.sig_id IS NOT NULL
              GROUP BY r.id, r.name
              ORDER BY total_activities DESC`,
             [contributor.id, startDateStr]
@@ -3365,6 +3458,14 @@ app.get('/api/v1/contributors/:username', async (req, res) => {
 // --- Server Start ---
 app.listen(PORT, '0.0.0.0', async () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
+
+    await redisConnectionPromise;
+
+    try {
+        await synchronizeRepositoryMetadata();
+    } catch (e) {
+        console.error('Repository SIG synchronization failed on startup:', e.message);
+    }
 
     if (ENABLE_STARTUP_CACHE_FLUSH) {
         try {

@@ -5,6 +5,10 @@ const {
 
 require('dotenv').config();
 const { Pool } = require('pg');
+const {
+    DEFAULT_PROPERTY_NAME,
+    syncRepositorySigsFromGitHub,
+} = require('./repository_sig_sync');
 
 const ORG_NAME = 'hust-open-atom-club'; // 确保与主程序一致
 
@@ -93,13 +97,20 @@ async function runCommitStatsCorrection(daysToFix = 30) {
     console.log('--- [START] GraphQL Commit Stats Correction Script ---');
     console.log(`This will recalculate and update commit/line stats for the last ${daysToFix} days.`);
 
+    await syncRepositorySigsFromGitHub({
+        pool,
+        githubToken: process.env.GITHUB_TOKEN,
+        orgName: ORG_NAME,
+        propertyName: process.env.GITHUB_SIG_PROPERTY || DEFAULT_PROPERTY_NAME,
+    });
+
     // 获取所有需要监控的仓库
     const orgResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
     const org = orgResult.rows[0];
     if (!org) {
         throw new Error('Monitored organization not found in DB.');
     }
-    const reposResult = await pool.query('SELECT id, name FROM repositories WHERE org_id = $1', [org.id]);
+    const reposResult = await pool.query('SELECT id, name FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
     const repositories = reposResult.rows;
     console.log(`Found ${repositories.length} repositories to process.`);
 

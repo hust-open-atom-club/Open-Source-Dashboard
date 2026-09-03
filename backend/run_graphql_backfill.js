@@ -23,6 +23,10 @@ const {
     fetchCommitHistoryViaGraphQL: fetchCommitHistoryRangeViaGraphQL,
     fetchCommitsViaGraphQL: fetchCommitsForDayViaGraphQL,
 } = require('./github_commit_history');
+const {
+    DEFAULT_PROPERTY_NAME,
+    syncRepositorySigsFromGitHub,
+} = require('./repository_sig_sync');
 
 // --- Configuration ---
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -462,6 +466,7 @@ async function refreshContributorDailyActivitiesFromRepoActivities(client, orgId
          FROM contributor_repo_activities cra
          JOIN repositories r ON r.id = cra.repo_id
          WHERE r.org_id = $1
+           AND r.sig_id IS NOT NULL
            AND cra.snapshot_date = $2
            AND cra.contributor_id = ANY($3::int[])
          GROUP BY cra.contributor_id
@@ -612,16 +617,54 @@ async function storeRepoCommitStats(repoId, repoName, targetDate, commitStats) {
                         );
                     }
 
-                    // Update contributor_daily_activities with commit data
                     await pool.query(
-                        `INSERT INTO contributor_daily_activities 
-                         (contributor_id, org_id, snapshot_date, commits_count, lines_added, lines_deleted)
+                        `INSERT INTO contributor_repo_activities
+                         (contributor_id, repo_id, snapshot_date, commits_count, lines_added, lines_deleted)
                          VALUES ($1, $2, $3, $4, $5, $6)
-                         ON CONFLICT (contributor_id, org_id, snapshot_date) DO UPDATE
+                         ON CONFLICT (contributor_id, repo_id, snapshot_date) DO UPDATE
                          SET commits_count = EXCLUDED.commits_count,
                              lines_added = EXCLUDED.lines_added,
                              lines_deleted = EXCLUDED.lines_deleted`,
-                        [contributorId, orgId, targetDateStr, stats.commits, stats.lines_added, stats.lines_deleted]
+                        [contributorId, repoId, targetDateStr, stats.commits, stats.lines_added, stats.lines_deleted]
+                    );
+
+                    // Rebuild the organization-level row from tracked repository facts.
+                    await pool.query(
+                        `INSERT INTO contributor_daily_activities
+                         (contributor_id, org_id, snapshot_date, prs_opened, prs_closed,
+                          issues_opened, issues_closed, commits_count, lines_added,
+                          lines_deleted, active_repos_count)
+                         SELECT cra.contributor_id, $1, $2,
+                                COALESCE(SUM(cra.prs_opened), 0),
+                                COALESCE(SUM(cra.prs_closed), 0),
+                                COALESCE(SUM(cra.issues_opened), 0),
+                                COALESCE(SUM(cra.issues_closed), 0),
+                                COALESCE(SUM(cra.commits_count), 0),
+                                COALESCE(SUM(cra.lines_added), 0),
+                                COALESCE(SUM(cra.lines_deleted), 0),
+                                COUNT(DISTINCT CASE
+                                    WHEN cra.prs_opened > 0 OR cra.prs_closed > 0
+                                      OR cra.issues_opened > 0 OR cra.issues_closed > 0
+                                      OR cra.commits_count > 0
+                                    THEN cra.repo_id
+                                END)
+                         FROM contributor_repo_activities cra
+                         JOIN repositories r ON r.id = cra.repo_id
+                         WHERE cra.contributor_id = $3
+                           AND cra.snapshot_date = $2
+                           AND r.org_id = $1
+                           AND r.sig_id IS NOT NULL
+                         GROUP BY cra.contributor_id
+                         ON CONFLICT (contributor_id, org_id, snapshot_date) DO UPDATE
+                         SET prs_opened = EXCLUDED.prs_opened,
+                             prs_closed = EXCLUDED.prs_closed,
+                             issues_opened = EXCLUDED.issues_opened,
+                             issues_closed = EXCLUDED.issues_closed,
+                             commits_count = EXCLUDED.commits_count,
+                             lines_added = EXCLUDED.lines_added,
+                             lines_deleted = EXCLUDED.lines_deleted,
+                             active_repos_count = EXCLUDED.active_repos_count`,
+                        [orgId, targetDateStr, contributorId]
                     );
                 } catch (err) {
                     console.error(`[Commits] Error storing commit stats for ${username}:`, err.message);
@@ -772,6 +815,25 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
             await redisClient.connect();
         }
 
+        const syncResult = await syncRepositorySigsFromGitHub({
+            pool,
+            githubToken: GITHUB_TOKEN,
+            orgName: ORG_NAME,
+            propertyName: process.env.GITHUB_SIG_PROPERTY || DEFAULT_PROPERTY_NAME,
+        });
+        console.log(
+            `[Repository SIG Sync] ${syncResult.repositories} repositories: ` +
+            `${syncResult.tracked} tracked, ${syncResult.untracked} untracked, ` +
+            `${syncResult.changes.length} changed.`
+        );
+        if (syncResult.changes.length > 0) {
+            if (!redisClient.isOpen) {
+                await redisClient.connect();
+            }
+            await redisClient.flushAll();
+            console.log('[Repository SIG Sync] Redis cache cleared after historical re-aggregation.');
+        }
+
         const orgsResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
         const org = orgsResult.rows[0];
         if (!org) {
@@ -779,7 +841,7 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
             return;
         }
 
-        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1', [org.id]);
+        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
         const repositories = reposResult.rows;
 
         if (repositories.length === 0) {
