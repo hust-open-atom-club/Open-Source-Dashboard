@@ -5,6 +5,19 @@ async function upsertContributor(client, {
     snapshotDate,
 }) {
     if (githubId !== null && githubId !== undefined) {
+        // GitHub may recycle a login after its previous owner renames or deletes their
+        // account. Preserve that old identity under an impossible GitHub login so the
+        // incoming numeric ID can claim the current username without losing history.
+        await client.query(
+            `UPDATE contributors
+             SET github_username = github_username || '~' || github_id::text,
+                 updated_at = NOW()
+             WHERE github_username = $1
+               AND github_id IS NOT NULL
+               AND github_id <> $2`,
+            [username, githubId]
+        );
+
         const existingById = await client.query(
             `UPDATE contributors
              SET github_username = $1,

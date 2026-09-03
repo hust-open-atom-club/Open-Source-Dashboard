@@ -21,7 +21,7 @@ function createDatabaseDouble({ failOn, existingContributorId } = {}) {
             if (text.startsWith('SELECT contributor_id')) {
                 return { rows: [{ contributor_id: 41 }] };
             }
-            if (text.startsWith('UPDATE contributors')) {
+            if (text.startsWith('UPDATE contributors') && text.includes('WHERE github_id = $2')) {
                 return { rows: existingContributorId ? [{ id: existingContributorId }] : [] };
             }
             if (text.startsWith('INSERT INTO contributors')) {
@@ -98,6 +98,17 @@ test('commit authors are persisted and organization daily totals are rebuilt', a
     assert.deepEqual(dailyInsert.params, [7, '2026-09-02', [41, 42]]);
     assert.match(dailyInsert.sql, /SUM\(cra\.commits_count\)/);
     assert.match(dailyInsert.sql, /r\.sig_id IS NOT NULL/);
+    assert.match(dailyInsert.sql, /cra\.commits_count <> 0/);
+
+    const emptyRepoActivityDelete = database.queries.find((query) =>
+        query.sql.startsWith('DELETE FROM contributor_repo_activities')
+    );
+    assert.deepEqual(emptyRepoActivityDelete.params, [11, '2026-09-02']);
+    const dailyDelete = database.queries.find((query) =>
+        query.sql.startsWith('DELETE FROM contributor_daily_activities')
+    );
+    assert.deepEqual(dailyDelete.params, [7, '2026-09-02', [41, 42]]);
+    assert.ok(database.queries.indexOf(dailyDelete) < database.queries.indexOf(dailyInsert));
 });
 
 test('commit author persistence rolls back and propagates write failures', async () => {
@@ -144,7 +155,9 @@ test('commit authors are resolved by stable GitHub ID across username changes', 
         },
     });
 
-    const identityUpdate = database.queries.find((query) => query.sql.startsWith('UPDATE contributors'));
+    const identityUpdate = database.queries.find((query) =>
+        query.sql.startsWith('UPDATE contributors') && query.sql.includes('WHERE github_id = $2')
+    );
     assert.deepEqual(identityUpdate.params, [
         'alice-renamed',
         101,
@@ -156,4 +169,71 @@ test('commit authors are resolved by stable GitHub ID across username changes', 
 
     const repoActivityInsert = database.queries.find((query) => query.sql.startsWith('INSERT INTO contributor_repo_activities'));
     assert.deepEqual(repoActivityInsert.params, [73, 11, '2025-08-01', 1, 3, 1]);
+});
+
+test('cleared commit authors are removed from repository and daily activity summaries', async () => {
+    const database = createDatabaseDouble();
+
+    await storeCommitAuthorStats({
+        pool: database.pool,
+        repoId: 11,
+        snapshotDate: '2026-09-02',
+        authorStats: {},
+    });
+
+    const repoActivityDelete = database.queries.find((query) =>
+        query.sql.startsWith('DELETE FROM contributor_repo_activities')
+    );
+    assert.deepEqual(repoActivityDelete.params, [11, '2026-09-02']);
+    assert.match(repoActivityDelete.sql, /COALESCE\(prs_opened, 0\) = 0/);
+    assert.match(repoActivityDelete.sql, /COALESCE\(commits_count, 0\) = 0/);
+
+    const dailyDelete = database.queries.find((query) =>
+        query.sql.startsWith('DELETE FROM contributor_daily_activities')
+    );
+    const dailyInsert = database.queries.find((query) =>
+        query.sql.startsWith('INSERT INTO contributor_daily_activities')
+    );
+    assert.deepEqual(dailyDelete.params, [7, '2026-09-02', [41]]);
+    assert.ok(database.queries.indexOf(dailyDelete) < database.queries.indexOf(dailyInsert));
+});
+
+test('recycled GitHub usernames are detached from the old ID before inserting the new identity', async () => {
+    const database = createDatabaseDouble();
+
+    await storeCommitAuthorStats({
+        pool: database.pool,
+        repoId: 11,
+        snapshotDate: '2026-09-02',
+        authorStats: {
+            alice: {
+                github_id: 202,
+                avatar_url: 'https://example.test/new-alice',
+                commits: 1,
+                lines_added: 2,
+                lines_deleted: 0,
+            },
+        },
+    });
+
+    const recycledUsernameUpdate = database.queries.find((query) =>
+        query.sql.includes("github_username = github_username || '~'")
+    );
+    assert.deepEqual(recycledUsernameUpdate.params, ['alice', 202]);
+    assert.match(recycledUsernameUpdate.sql, /github_id <> \$2/);
+
+    const identityUpdate = database.queries.find((query) =>
+        query.sql.startsWith('UPDATE contributors') && query.sql.includes('WHERE github_id = $2')
+    );
+    const contributorInsert = database.queries.find((query) =>
+        query.sql.startsWith('INSERT INTO contributors')
+    );
+    assert.ok(database.queries.indexOf(recycledUsernameUpdate) < database.queries.indexOf(identityUpdate));
+    assert.ok(database.queries.indexOf(identityUpdate) < database.queries.indexOf(contributorInsert));
+    assert.deepEqual(contributorInsert.params, [
+        'alice',
+        202,
+        'https://example.test/new-alice',
+        '2026-09-02',
+    ]);
 });

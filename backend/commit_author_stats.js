@@ -71,6 +71,22 @@ async function storeCommitAuthorStats({ pool, repoId, snapshotDate, authorStats 
             );
         }
 
+        // Remove facts that became empty after rewritten history dropped an author.
+        // Keeping these rows would make contributor endpoints count activity by existence.
+        await client.query(
+            `DELETE FROM contributor_repo_activities
+             WHERE repo_id = $1
+               AND snapshot_date = $2
+               AND COALESCE(prs_opened, 0) = 0
+               AND COALESCE(prs_closed, 0) = 0
+               AND COALESCE(issues_opened, 0) = 0
+               AND COALESCE(issues_closed, 0) = 0
+               AND COALESCE(commits_count, 0) = 0
+               AND COALESCE(lines_added, 0) = 0
+               AND COALESCE(lines_deleted, 0) = 0`,
+            [repoId, snapshotDate]
+        );
+
         if (affectedContributorIds.size > 0) {
             await rebuildContributorDailyActivities(
                 client,

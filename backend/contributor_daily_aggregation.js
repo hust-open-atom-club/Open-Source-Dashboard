@@ -18,6 +18,16 @@ async function acquireContributorWriteLocks(client, orgId, snapshotDate) {
 async function rebuildContributorDailyActivities(client, orgId, snapshotDate, contributorIds) {
     if (contributorIds.length === 0) return;
 
+    // Rebuild is replacement-based. Remove prior summaries first so contributors with
+    // no remaining tracked repository facts disappear instead of retaining zero rows.
+    await client.query(
+        `DELETE FROM contributor_daily_activities
+         WHERE org_id = $1
+           AND snapshot_date = $2
+           AND contributor_id = ANY($3::int[])`,
+        [orgId, snapshotDate, contributorIds]
+    );
+
     await client.query(
         `INSERT INTO contributor_daily_activities
          (contributor_id, org_id, snapshot_date, prs_opened, prs_closed,
@@ -44,6 +54,10 @@ async function rebuildContributorDailyActivities(client, orgId, snapshotDate, co
            AND r.sig_id IS NOT NULL
            AND cra.snapshot_date = $2
            AND cra.contributor_id = ANY($3::int[])
+           AND (cra.prs_opened <> 0 OR cra.prs_closed <> 0
+             OR cra.issues_opened <> 0 OR cra.issues_closed <> 0
+             OR cra.commits_count <> 0 OR cra.lines_added <> 0
+             OR cra.lines_deleted <> 0)
          GROUP BY cra.contributor_id
          ON CONFLICT (contributor_id, org_id, snapshot_date) DO UPDATE
          SET prs_opened = EXCLUDED.prs_opened,
