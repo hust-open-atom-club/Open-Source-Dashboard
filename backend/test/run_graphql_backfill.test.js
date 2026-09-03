@@ -6,6 +6,7 @@ const {
     fetchCommitsViaGraphQL,
     fetchRepoStatsViaGraphQL,
     formatDate,
+    storeContributorActivities,
 } = require('../run_graphql_backfill');
 const { runPromisesWithConcurrency } = require('../promise_concurrency');
 const {
@@ -309,4 +310,86 @@ test('the concurrency runner reports task failures after allowing other tasks to
     );
 
     assert.deepEqual(completed.sort(), ['first', 'third']);
+});
+
+test('the API contributor writer shares the locked full daily aggregation path', async () => {
+    const queries = [];
+    let released = false;
+    const client = {
+        async query(sql, params = []) {
+            const text = sql.trim();
+            queries.push({ sql: text, params });
+            if (text.startsWith('SELECT id FROM organizations')) {
+                return { rows: [{ id: 7 }] };
+            }
+            if (text.startsWith('INSERT INTO contributors')) {
+                return { rows: [{ id: 42 }] };
+            }
+            return { rows: [], rowCount: 1 };
+        },
+        release() {
+            released = true;
+        },
+    };
+
+    await storeContributorActivities(11, '2026-09-02', [{
+        username: 'alice',
+        github_id: 101,
+        avatar_url: 'https://example.test/alice',
+        prs_opened: 1,
+        prs_closed: 0,
+        issues_opened: 0,
+        issues_closed: 0,
+    }], { connect: async () => client });
+
+    const lockQuery = queries.find((query) => query.sql.includes('pg_advisory_xact_lock'));
+    assert.deepEqual(lockQuery.params, [7, '2026-09-02']);
+
+    const dailyInsert = queries.find((query) => query.sql.startsWith('INSERT INTO contributor_daily_activities'));
+    assert.match(dailyInsert.sql, /SUM\(cra\.commits_count\)/);
+    assert.match(dailyInsert.sql, /cra\.commits_count <> 0/);
+    assert.deepEqual(dailyInsert.params, [7, '2026-09-02', [42]]);
+    assert.equal(queries.at(-1).sql, 'COMMIT');
+    assert.equal(released, true);
+});
+
+test('the API contributor writer rolls back and propagates aggregation failures', async () => {
+    const queries = [];
+    let released = false;
+    const client = {
+        async query(sql) {
+            const text = sql.trim();
+            queries.push(text);
+            if (text.startsWith('SELECT id FROM organizations')) {
+                return { rows: [{ id: 7 }] };
+            }
+            if (text.startsWith('INSERT INTO contributors')) {
+                return { rows: [{ id: 42 }] };
+            }
+            if (text.startsWith('INSERT INTO contributor_daily_activities')) {
+                throw new Error('daily aggregation failed');
+            }
+            return { rows: [], rowCount: 1 };
+        },
+        release() {
+            released = true;
+        },
+    };
+
+    await assert.rejects(
+        storeContributorActivities(11, '2026-09-02', [{
+            username: 'alice',
+            github_id: 101,
+            avatar_url: null,
+            prs_opened: 1,
+            prs_closed: 0,
+            issues_opened: 0,
+            issues_closed: 0,
+        }], { connect: async () => client }),
+        /daily aggregation failed/
+    );
+
+    assert.equal(queries.includes('ROLLBACK'), true);
+    assert.equal(queries.includes('COMMIT'), false);
+    assert.equal(released, true);
 });

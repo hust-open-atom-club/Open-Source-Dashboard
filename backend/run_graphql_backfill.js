@@ -33,6 +33,7 @@ const {
     getPrimaryRateLimitWaitMs,
 } = require('./github_rate_limit');
 const { storeCommitAuthorStats } = require('./commit_author_stats');
+const { rebuildContributorDailyActivities } = require('./contributor_daily_aggregation');
 
 // --- Configuration ---
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -443,50 +444,11 @@ async function storeRepoApiStatsForDate(repoId, repoName, dateStr, stats, contri
     }
 }
 
-// --- Store Contributor Activities ---
-async function refreshContributorDailyActivitiesFromRepoActivities(client, orgId, dateStr, contributorIds) {
-    if (contributorIds.length === 0) return;
-
-    await client.query(
-        `INSERT INTO contributor_daily_activities
-         (contributor_id, org_id, snapshot_date, prs_opened, prs_closed, issues_opened, issues_closed, active_repos_count)
-         SELECT
-             cra.contributor_id,
-             $1,
-             $2,
-             COALESCE(SUM(cra.prs_opened), 0),
-             COALESCE(SUM(cra.prs_closed), 0),
-             COALESCE(SUM(cra.issues_opened), 0),
-             COALESCE(SUM(cra.issues_closed), 0),
-             COUNT(DISTINCT CASE
-                 WHEN cra.prs_opened > 0
-                   OR cra.prs_closed > 0
-                   OR cra.issues_opened > 0
-                   OR cra.issues_closed > 0
-                 THEN cra.repo_id
-             END)
-         FROM contributor_repo_activities cra
-         JOIN repositories r ON r.id = cra.repo_id
-         WHERE r.org_id = $1
-           AND r.sig_id IS NOT NULL
-           AND cra.snapshot_date = $2
-           AND cra.contributor_id = ANY($3::int[])
-         GROUP BY cra.contributor_id
-         ON CONFLICT (contributor_id, org_id, snapshot_date) DO UPDATE
-         SET prs_opened = EXCLUDED.prs_opened,
-             prs_closed = EXCLUDED.prs_closed,
-             issues_opened = EXCLUDED.issues_opened,
-             issues_closed = EXCLUDED.issues_closed,
-             active_repos_count = EXCLUDED.active_repos_count`,
-        [orgId, dateStr, contributorIds]
-    );
-}
-
-async function storeContributorActivities(repoId, dateStr, contributorDetails) {
+async function storeContributorActivities(repoId, dateStr, contributorDetails, databasePool = pool) {
     const humanContributorDetails = filterBotContributors(contributorDetails);
     if (humanContributorDetails.length === 0) return;
 
-    const client = await pool.connect();
+    const client = await databasePool.connect();
     try {
         await client.query('BEGIN');
 
@@ -535,7 +497,7 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails) {
         }
 
         // Rebuild org-level daily contributor stats from repo-level facts so reruns stay idempotent.
-        await refreshContributorDailyActivitiesFromRepoActivities(
+        await rebuildContributorDailyActivities(
             client,
             orgId,
             dateStr,
@@ -546,6 +508,7 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails) {
     } catch (error) {
         await client.query('ROLLBACK').catch(() => { });
         console.error('[Contributors] Error in storeContributorActivities:', error.message);
+        throw error;
     } finally {
         client.release();
     }
@@ -1000,6 +963,7 @@ module.exports = {
     fetchRepoStatsViaGraphQL,
     fetchCommitHistoryViaGraphQL,
     fetchCommitsViaGraphQL,
+    storeContributorActivities,
     runPromisesWithConcurrency,
     formatDate,
     getScopedProgressFile,
