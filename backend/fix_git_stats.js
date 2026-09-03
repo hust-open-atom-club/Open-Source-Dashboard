@@ -9,6 +9,7 @@ const {
     DEFAULT_PROPERTY_NAME,
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
+const { storeCommitAuthorStats } = require('./commit_author_stats');
 
 const ORG_NAME = 'hust-open-atom-club'; // 确保与主程序一致
 
@@ -83,6 +84,12 @@ async function correctStatsForRepo(repo, targetDate, stats) {
     );
 
     if (result.rowCount > 0) {
+        await storeCommitAuthorStats({
+            pool,
+            repoId: repo.id,
+            snapshotDate: targetDateStr,
+            authorStats: stats.authorStats,
+        });
         console.log(`    ✅ Updated [${repo.name}]: commits=${stats.new_commits}, lines=+${stats.lines_added}/-${stats.lines_deleted}`);
     } else {
         console.warn(`    ⚠️ No existing record found for [${repo.name}] on ${targetDateStr}. This is OK if the repo had no API activity on that day.`);

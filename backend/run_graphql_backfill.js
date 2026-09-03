@@ -32,6 +32,7 @@ const {
     MAX_RATE_LIMIT_RETRIES,
     getPrimaryRateLimitWaitMs,
 } = require('./github_rate_limit');
+const { storeCommitAuthorStats } = require('./commit_author_stats');
 
 // --- Configuration ---
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -583,95 +584,12 @@ async function storeRepoCommitStats(repoId, repoName, targetDate, commitStats) {
             [repoId, targetDateStr, commitStats.new_commits, commitStats.lines_added, commitStats.lines_deleted]
         );
 
-        // Store per-author commit stats (now with correct GitHub usernames!)
-        if (Object.keys(commitStats.authorStats).length > 0) {
-            // Get org_id from repo
-            const repoResult = await pool.query('SELECT org_id FROM repositories WHERE id = $1', [repoId]);
-            if (repoResult.rows.length === 0) return;
-            const orgId = repoResult.rows[0].org_id;
-
-            for (const [username, stats] of Object.entries(commitStats.authorStats)) {
-                try {
-                    // Find or create contributor
-                    let contributorResult = await pool.query(
-                        'SELECT id FROM contributors WHERE github_username = $1',
-                        [username]
-                    );
-
-                    let contributorId;
-                    if (contributorResult.rows.length === 0) {
-                        // Create new contributor
-                        const insertResult = await pool.query(
-                            `INSERT INTO contributors (github_username, github_id, avatar_url, first_seen_date, last_seen_date)
-                             VALUES ($1, $2, $3, $4, $4)
-                             ON CONFLICT (github_username) DO UPDATE SET last_seen_date = $4
-                             RETURNING id`,
-                            [username, stats.github_id, stats.avatar_url, targetDateStr]
-                        );
-                        contributorId = insertResult.rows[0].id;
-                    } else {
-                        contributorId = contributorResult.rows[0].id;
-                        // Update last_seen_date
-                        await pool.query(
-                            'UPDATE contributors SET last_seen_date = GREATEST(last_seen_date, $1) WHERE id = $2',
-                            [targetDateStr, contributorId]
-                        );
-                    }
-
-                    await pool.query(
-                        `INSERT INTO contributor_repo_activities
-                         (contributor_id, repo_id, snapshot_date, commits_count, lines_added, lines_deleted)
-                         VALUES ($1, $2, $3, $4, $5, $6)
-                         ON CONFLICT (contributor_id, repo_id, snapshot_date) DO UPDATE
-                         SET commits_count = EXCLUDED.commits_count,
-                             lines_added = EXCLUDED.lines_added,
-                             lines_deleted = EXCLUDED.lines_deleted`,
-                        [contributorId, repoId, targetDateStr, stats.commits, stats.lines_added, stats.lines_deleted]
-                    );
-
-                    // Rebuild the organization-level row from tracked repository facts.
-                    await pool.query(
-                        `INSERT INTO contributor_daily_activities
-                         (contributor_id, org_id, snapshot_date, prs_opened, prs_closed,
-                          issues_opened, issues_closed, commits_count, lines_added,
-                          lines_deleted, active_repos_count)
-                         SELECT cra.contributor_id, $1, $2,
-                                COALESCE(SUM(cra.prs_opened), 0),
-                                COALESCE(SUM(cra.prs_closed), 0),
-                                COALESCE(SUM(cra.issues_opened), 0),
-                                COALESCE(SUM(cra.issues_closed), 0),
-                                COALESCE(SUM(cra.commits_count), 0),
-                                COALESCE(SUM(cra.lines_added), 0),
-                                COALESCE(SUM(cra.lines_deleted), 0),
-                                COUNT(DISTINCT CASE
-                                    WHEN cra.prs_opened > 0 OR cra.prs_closed > 0
-                                      OR cra.issues_opened > 0 OR cra.issues_closed > 0
-                                      OR cra.commits_count > 0
-                                    THEN cra.repo_id
-                                END)
-                         FROM contributor_repo_activities cra
-                         JOIN repositories r ON r.id = cra.repo_id
-                         WHERE cra.contributor_id = $3
-                           AND cra.snapshot_date = $2
-                           AND r.org_id = $1
-                           AND r.sig_id IS NOT NULL
-                         GROUP BY cra.contributor_id
-                         ON CONFLICT (contributor_id, org_id, snapshot_date) DO UPDATE
-                         SET prs_opened = EXCLUDED.prs_opened,
-                             prs_closed = EXCLUDED.prs_closed,
-                             issues_opened = EXCLUDED.issues_opened,
-                             issues_closed = EXCLUDED.issues_closed,
-                             commits_count = EXCLUDED.commits_count,
-                             lines_added = EXCLUDED.lines_added,
-                             lines_deleted = EXCLUDED.lines_deleted,
-                             active_repos_count = EXCLUDED.active_repos_count`,
-                        [orgId, targetDateStr, contributorId]
-                    );
-                } catch (err) {
-                    console.error(`[Commits] Error storing commit stats for ${username}:`, err.message);
-                }
-            }
-        }
+        await storeCommitAuthorStats({
+            pool,
+            repoId,
+            snapshotDate: targetDateStr,
+            authorStats: commitStats.authorStats,
+        });
     } catch (error) {
         console.error(`[Commits] Error storing commit data for ${repoName}:`, error.message);
         throw error;

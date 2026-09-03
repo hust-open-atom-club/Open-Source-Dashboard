@@ -12,6 +12,7 @@ const {
     DEFAULT_PROPERTY_NAME,
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
+const { storeCommitAuthorStats } = require('./commit_author_stats');
 
 const ORG_NAME = 'hust-open-atom-club';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -161,6 +162,13 @@ async function storeRepoCommitStats(repoId, repoName, targetDate, commitStats) {
             [repoId, targetDateStr, commitStats.new_commits, commitStats.lines_added, commitStats.lines_deleted]
         );
         console.log(`[GraphQL Commit Pipeline] ${repoName}@${targetDateStr}: ✅ 已存储到数据库 (id=${result.rows[0].id})`);
+
+        await storeCommitAuthorStats({
+            pool,
+            repoId,
+            snapshotDate: targetDateStr,
+            authorStats: commitStats.authorStats,
+        });
     } catch (error) {
         console.error(`[GraphQL Commit Pipeline] Error storing commit data for repo ${repoName}:`, error.message);
         // We throw here because a DB error is more critical.
