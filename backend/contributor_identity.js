@@ -48,6 +48,44 @@ async function mergeContributorIdentities(client, sourceContributorId, targetCon
         [targetContributorId]
     );
 
+    await client.query(
+        `UPDATE sig_snapshots AS snapshot
+         SET active_contributors = (
+             SELECT COALESCE(SUM(repo_snapshot.active_contributors), 0)::integer
+             FROM repo_snapshots repo_snapshot
+             JOIN repositories repo ON repo.id = repo_snapshot.repo_id
+             WHERE repo.sig_id = snapshot.sig_id
+               AND repo_snapshot.snapshot_date = snapshot.snapshot_date
+         )
+         WHERE (snapshot.sig_id, snapshot.snapshot_date) IN (
+             SELECT DISTINCT repo.sig_id, activity.snapshot_date
+             FROM contributor_repo_activities activity
+             JOIN repositories repo ON repo.id = activity.repo_id
+             WHERE activity.contributor_id = $1
+               AND repo.sig_id IS NOT NULL
+         )`,
+        [targetContributorId]
+    );
+
+    await client.query(
+        `UPDATE activity_snapshots AS snapshot
+         SET active_contributors = (
+             SELECT COALESCE(SUM(sig_snapshot.active_contributors), 0)::integer
+             FROM sig_snapshots sig_snapshot
+             JOIN special_interest_groups sig ON sig.id = sig_snapshot.sig_id
+             WHERE sig.org_id = snapshot.org_id
+               AND sig_snapshot.snapshot_date = snapshot.snapshot_date
+         )
+         WHERE (snapshot.org_id, snapshot.snapshot_date) IN (
+             SELECT DISTINCT repo.org_id, activity.snapshot_date
+             FROM contributor_repo_activities activity
+             JOIN repositories repo ON repo.id = activity.repo_id
+             WHERE activity.contributor_id = $1
+               AND repo.sig_id IS NOT NULL
+         )`,
+        [targetContributorId]
+    );
+
     // Daily rows are derived data. Rebuild every date and organization for the
     // merged identity so overlapping source/target facts do not double-count repos.
     await client.query(
