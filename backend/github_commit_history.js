@@ -129,6 +129,9 @@ async function fetchCommitHistoryViaGraphQL(
                                     }
                                     additions
                                     deletions
+                                    parents {
+                                        totalCount
+                                    }
                                 }
                             }
                         }
@@ -176,8 +179,12 @@ async function fetchCommitHistoryViaGraphQL(
                     continue;
                 }
 
-                const additions = commit.additions || 0;
-                const deletions = commit.deletions || 0;
+                // Match `git log --numstat`: merge commits still count as commits,
+                // but their combined diff must not duplicate changes already
+                // attributed to the commits merged into the default branch.
+                const isMergeCommit = commit.parents?.totalCount > 1;
+                const additions = isMergeCommit ? 0 : (commit.additions || 0);
+                const deletions = isMergeCommit ? 0 : (commit.deletions || 0);
                 result.new_commits++;
                 result.lines_added += additions;
                 result.lines_deleted += deletions;

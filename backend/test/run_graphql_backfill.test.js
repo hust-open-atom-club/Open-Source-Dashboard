@@ -176,8 +176,9 @@ test('an empty repository with no default branch still produces legitimate zero 
     });
 });
 
-test('commit collection paginates GraphQL history and aggregates human authors', async () => {
+test('commit collection paginates history, aggregates authors, and excludes merge diffs', async () => {
     const calls = [];
+    const queries = [];
     const pages = {
         first: {
             pageInfo: { hasNextPage: true, endCursor: 'page-2' },
@@ -203,6 +204,7 @@ test('commit collection paginates GraphQL history and aggregates human authors',
                     committedDate: '2026-08-31T04:00:00Z',
                     additions: 7,
                     deletions: 2,
+                    parents: { totalCount: 2 },
                     author: { user: { login: 'alice', databaseId: 101, avatarUrl: 'https://example.test/alice' } },
                 },
             ],
@@ -212,7 +214,8 @@ test('commit collection paginates GraphQL history and aggregates human authors',
     const result = await fetchCommitsViaGraphQL(
         'example-repo',
         new Date('2026-08-31T12:00:00Z'),
-        async (_query, variables) => {
+        async (query, variables) => {
+            queries.push(query);
             calls.push(variables);
             const history = pages[variables.cursor || 'first'];
             return { repository: { defaultBranchRef: { target: { history } } } };
@@ -220,20 +223,21 @@ test('commit collection paginates GraphQL history and aggregates human authors',
     );
 
     assert.equal(calls.length, 2);
+    assert.match(queries[0], /parents\s*\{\s*totalCount\s*\}/);
     assert.deepEqual(calls.map((call) => call.cursor), [null, 'page-2']);
     assert.equal(calls[0].owner, 'hust-open-atom-club');
     assert.equal(calls[0].repo, 'example-repo');
     assert.equal(new Date(calls[0].until).getTime() - new Date(calls[0].since).getTime(), 24 * 60 * 60 * 1000);
     assert.equal(result.new_commits, 3);
-    assert.equal(result.lines_added, 23);
-    assert.equal(result.lines_deleted, 6);
+    assert.equal(result.lines_added, 16);
+    assert.equal(result.lines_deleted, 4);
     assert.deepEqual(result.authorStats, {
         alice: {
             github_id: 101,
             avatar_url: 'https://example.test/alice',
             commits: 2,
-            lines_added: 19,
-            lines_deleted: 5,
+            lines_added: 12,
+            lines_deleted: 3,
         },
     });
 });
