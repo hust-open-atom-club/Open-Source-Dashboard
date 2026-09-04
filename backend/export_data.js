@@ -144,28 +144,33 @@ async function exportToExcel(data) {
  */
 async function main() {
     console.log('--- [START] Data Export ---');
-    
-    // 确保输出目录存在
-    if (!fs.existsSync(OUTPUT_DIR)){
-        fs.mkdirSync(OUTPUT_DIR);
+
+    try {
+        // 确保输出目录存在
+        if (!fs.existsSync(OUTPUT_DIR)) {
+            fs.mkdirSync(OUTPUT_DIR);
+        }
+
+        const data = await fetchDataForExport(30);
+
+        if (data.length === 0) {
+            console.warn('No data found for the specified period. Nothing to export.');
+            return;
+        }
+
+        exportToCsv(data);
+        exportToJson(data);
+        await exportToExcel(data);
+
+        console.log('\n--- [FINISH] Export Complete ---');
+    } finally {
+        await pool.end();
     }
-
-    const data = await fetchDataForExport(30); // 默认导出最近30天
-
-    if (data.length === 0) {
-        console.warn('No data found for the specified period. Nothing to export.');
-        return;
-    }
-
-    exportToCsv(data);
-    exportToJson(data);
-    await exportToExcel(data);
-
-    console.log('\n--- [FINISH] Export Complete ---');
-    await pool.end();
 }
 
-main().catch(err => {
-    console.error('An error occurred during the export script:', err);
-    pool.end();
-});
+if (require.main === module) {
+    main().catch(err => {
+        console.error('An error occurred during the export script:', err);
+        process.exitCode = 1;
+    });
+}
