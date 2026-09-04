@@ -13,7 +13,7 @@ function buildCommitStats(authorStats = {}, overrides = {}) {
     };
 }
 
-function createDatabaseDouble({ failOn, existingContributorId } = {}) {
+function createDatabaseDouble({ failOn, existingContributorId, nullIdOccupantId } = {}) {
     const queries = [];
     let released = false;
 
@@ -36,6 +36,12 @@ function createDatabaseDouble({ failOn, existingContributorId } = {}) {
             }
             if (text.startsWith('UPDATE repo_snapshots') && text.includes('SET new_commits')) {
                 return { rows: [], rowCount: 0 };
+            }
+            if (text.startsWith('SELECT id') && text.includes('github_username = $1 AND github_id IS NULL')) {
+                return { rows: nullIdOccupantId ? [{ id: nullIdOccupantId }] : [] };
+            }
+            if (text.startsWith('SELECT id') && text.includes('WHERE github_id = $1')) {
+                return { rows: existingContributorId ? [{ id: existingContributorId }] : [] };
             }
             if (text.startsWith('UPDATE contributors') && text.includes('WHERE github_id = $2')) {
                 return { rows: existingContributorId ? [{ id: existingContributorId }] : [] };
@@ -302,4 +308,54 @@ test('recycled GitHub usernames are detached from the old ID before inserting th
         'https://example.test/new-alice',
         '2026-09-02',
     ]);
+});
+
+test('a null-ID username occupant is merged before an ID-backed identity is renamed', async () => {
+    const database = createDatabaseDouble({
+        existingContributorId: 73,
+        nullIdOccupantId: 42,
+    });
+
+    await persistRepoCommitStats({
+        pool: database.pool,
+        repoId: 11,
+        snapshotDate: '2026-09-02',
+        commitStats: buildCommitStats({
+            alice: {
+                github_id: 101,
+                avatar_url: 'https://example.test/alice',
+                commits: 1,
+                lines_added: 2,
+                lines_deleted: 0,
+            },
+        }, { new_commits: 1, lines_added: 2, lines_deleted: 0 }),
+    });
+
+    const repoFactsMerge = database.queries.find((query) =>
+        query.sql.startsWith('INSERT INTO contributor_repo_activities') &&
+        query.sql.includes('SELECT $1, repo_id')
+    );
+    assert.deepEqual(repoFactsMerge.params, [73, 42]);
+    assert.match(repoFactsMerge.sql, /COALESCE\(contributor_repo_activities\.commits_count, 0\)/);
+
+    const dailyDelete = database.queries.find((query) =>
+        query.sql.startsWith('DELETE FROM contributor_daily_activities') &&
+        query.sql.includes('ANY($1::int[])')
+    );
+    assert.deepEqual(dailyDelete.params, [[73, 42]]);
+    const allDailyRebuild = database.queries.find((query) =>
+        query.sql.startsWith('INSERT INTO contributor_daily_activities') &&
+        query.params.length === 1
+    );
+    assert.deepEqual(allDailyRebuild.params, [73]);
+    assert.match(allDailyRebuild.sql, /COUNT\(DISTINCT cra\.repo_id\)/);
+
+    const sourceDelete = database.queries.find((query) =>
+        query.sql === 'DELETE FROM contributors WHERE id = $1'
+    );
+    assert.deepEqual(sourceDelete.params, [42]);
+    const identityRename = database.queries.find((query) =>
+        query.sql.startsWith('UPDATE contributors') && query.sql.includes('WHERE github_id = $2')
+    );
+    assert.ok(database.queries.indexOf(sourceDelete) < database.queries.indexOf(identityRename));
 });
