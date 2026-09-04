@@ -25,6 +25,29 @@ async function mergeContributorIdentities(client, sourceContributorId, targetCon
         [sourceContributorId]
     );
 
+    // The merged target now contains every repository/date pair previously owned
+    // by either identity. Rebuild all of those snapshot counts, not only the date
+    // currently being ingested by the caller.
+    await client.query(
+        `UPDATE repo_snapshots AS snapshot
+         SET active_contributors = (
+             SELECT COUNT(DISTINCT activity.contributor_id)::integer
+             FROM contributor_repo_activities activity
+             WHERE activity.repo_id = snapshot.repo_id
+               AND activity.snapshot_date = snapshot.snapshot_date
+               AND (activity.prs_opened <> 0 OR activity.prs_closed <> 0
+                 OR activity.issues_opened <> 0 OR activity.issues_closed <> 0
+                 OR activity.commits_count <> 0 OR activity.lines_added <> 0
+                 OR activity.lines_deleted <> 0)
+         )
+         WHERE (snapshot.repo_id, snapshot.snapshot_date) IN (
+             SELECT repo_id, snapshot_date
+             FROM contributor_repo_activities
+             WHERE contributor_id = $1
+         )`,
+        [targetContributorId]
+    );
+
     // Daily rows are derived data. Rebuild every date and organization for the
     // merged identity so overlapping source/target facts do not double-count repos.
     await client.query(

@@ -338,6 +338,13 @@ test('a null-ID username occupant is merged before an ID-backed identity is rena
     assert.deepEqual(repoFactsMerge.params, [73, 42]);
     assert.match(repoFactsMerge.sql, /COALESCE\(contributor_repo_activities\.commits_count, 0\)/);
 
+    const historicalRepoCounts = database.queries.find((query) =>
+        query.sql.startsWith('UPDATE repo_snapshots AS snapshot')
+    );
+    assert.deepEqual(historicalRepoCounts.params, [73]);
+    assert.match(historicalRepoCounts.sql, /COUNT\(DISTINCT activity\.contributor_id\)/);
+    assert.match(historicalRepoCounts.sql, /WHERE contributor_id = \$1/);
+
     const dailyDelete = database.queries.find((query) =>
         query.sql.startsWith('DELETE FROM contributor_daily_activities') &&
         query.sql.includes('ANY($1::int[])')
