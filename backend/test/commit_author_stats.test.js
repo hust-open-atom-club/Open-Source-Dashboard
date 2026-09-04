@@ -128,6 +128,14 @@ test('commit authors are persisted and organization daily totals are rebuilt', a
         query.sql.startsWith('DELETE FROM contributor_repo_activities')
     );
     assert.deepEqual(emptyRepoActivityDelete.params, [11, '2026-09-02']);
+    const seenDatesUpdate = database.queries.find((query) =>
+        query.sql.startsWith('UPDATE contributors AS contributor')
+    );
+    assert.deepEqual(seenDatesUpdate.params, [[41, 42]]);
+    assert.match(seenDatesUpdate.sql, /MIN\(cra\.snapshot_date\)/);
+    assert.match(seenDatesUpdate.sql, /MAX\(cra\.snapshot_date\)/);
+    assert.match(seenDatesUpdate.sql, /r\.sig_id IS NOT NULL/);
+    assert.ok(database.queries.indexOf(emptyRepoActivityDelete) < database.queries.indexOf(seenDatesUpdate));
     const dailyDelete = database.queries.find((query) =>
         query.sql.startsWith('DELETE FROM contributor_daily_activities')
     );
@@ -249,6 +257,10 @@ test('cleared commit authors are removed from repository and daily activity summ
         query.sql.startsWith('INSERT INTO contributor_daily_activities')
     );
     assert.deepEqual(dailyDelete.params, [7, '2026-09-02', [41]]);
+    const seenDatesUpdate = database.queries.find((query) =>
+        query.sql.startsWith('UPDATE contributors AS contributor')
+    );
+    assert.deepEqual(seenDatesUpdate.params, [[41]]);
     assert.ok(database.queries.indexOf(dailyDelete) < database.queries.indexOf(dailyInsert));
 });
 

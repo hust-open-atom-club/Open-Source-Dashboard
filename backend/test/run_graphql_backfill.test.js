@@ -405,6 +405,14 @@ test('the API contributor writer clears stale authors and recomputes commit-only
     );
     assert.deepEqual(emptyActivityDelete.params, [11, '2026-09-02']);
 
+    const seenDatesUpdate = queries.find((query) =>
+        query.sql.startsWith('UPDATE contributors AS contributor')
+    );
+    assert.deepEqual(seenDatesUpdate.params, [[41]]);
+    assert.match(seenDatesUpdate.sql, /MIN\(cra\.snapshot_date\)/);
+    assert.match(seenDatesUpdate.sql, /MAX\(cra\.snapshot_date\)/);
+    assert.match(seenDatesUpdate.sql, /r\.sig_id IS NOT NULL/);
+
     const dailyDelete = queries.find((query) =>
         query.sql.startsWith('DELETE FROM contributor_daily_activities')
     );

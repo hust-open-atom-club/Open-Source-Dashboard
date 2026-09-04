@@ -88,6 +88,35 @@ async function rebuildContributorDailyActivities(client, orgId, snapshotDate, co
     );
 }
 
+async function rebuildContributorSeenDates(client, contributorIds) {
+    if (contributorIds.length === 0) return;
+
+    // Identity dates are derived from repository facts rather than monotonically
+    // expanded metadata, so rewritten history can move either boundary inward.
+    await client.query(
+        `UPDATE contributors AS contributor
+         SET first_seen_date = activity.first_seen_date,
+             last_seen_date = activity.last_seen_date,
+             updated_at = NOW()
+         FROM (
+             SELECT cra.contributor_id,
+                    MIN(cra.snapshot_date) AS first_seen_date,
+                    MAX(cra.snapshot_date) AS last_seen_date
+             FROM contributor_repo_activities cra
+             JOIN repositories r ON r.id = cra.repo_id
+             WHERE r.sig_id IS NOT NULL
+               AND cra.contributor_id = ANY($1::int[])
+               AND (cra.prs_opened <> 0 OR cra.prs_closed <> 0
+                 OR cra.issues_opened <> 0 OR cra.issues_closed <> 0
+                 OR cra.commits_count <> 0 OR cra.lines_added <> 0
+                 OR cra.lines_deleted <> 0)
+             GROUP BY cra.contributor_id
+         ) AS activity
+         WHERE contributor.id = activity.contributor_id`,
+        [contributorIds]
+    );
+}
+
 async function rebuildRepoActiveContributorCount(client, repoId, snapshotDate) {
     await client.query(
         `UPDATE repo_snapshots
@@ -110,5 +139,6 @@ module.exports = {
     acquireContributorWriteLocks,
     deleteEmptyContributorRepoActivities,
     rebuildContributorDailyActivities,
+    rebuildContributorSeenDates,
     rebuildRepoActiveContributorCount,
 };

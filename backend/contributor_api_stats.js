@@ -3,6 +3,7 @@ const {
     acquireContributorWriteLocks,
     deleteEmptyContributorRepoActivities,
     rebuildContributorDailyActivities,
+    rebuildContributorSeenDates,
     rebuildRepoActiveContributorCount,
 } = require('./contributor_daily_aggregation');
 const { upsertContributor } = require('./contributor_identity');
@@ -70,6 +71,10 @@ async function reconcileContributorActivities({
     }
 
     await deleteEmptyContributorRepoActivities(client, repoId, snapshotDate);
+    await rebuildContributorSeenDates(
+        client,
+        Array.from(affectedContributorIds)
+    );
     await rebuildContributorDailyActivities(
         client,
         orgId,

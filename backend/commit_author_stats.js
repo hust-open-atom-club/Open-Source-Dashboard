@@ -2,6 +2,7 @@ const {
     acquireContributorWriteLocks,
     deleteEmptyContributorRepoActivities,
     rebuildContributorDailyActivities,
+    rebuildContributorSeenDates,
     rebuildRepoActiveContributorCount,
 } = require('./contributor_daily_aggregation');
 const { upsertContributor } = require('./contributor_identity');
@@ -125,6 +126,10 @@ async function persistRepoCommitStats({
         await deleteEmptyContributorRepoActivities(client, repoId, snapshotDate);
 
         if (affectedContributorIds.size > 0) {
+            await rebuildContributorSeenDates(
+                client,
+                Array.from(affectedContributorIds)
+            );
             await rebuildContributorDailyActivities(
                 client,
                 orgId,
