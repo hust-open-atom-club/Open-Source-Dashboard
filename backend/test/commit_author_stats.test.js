@@ -1,7 +1,17 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { storeCommitAuthorStats } = require('../commit_author_stats');
+const { persistRepoCommitStats } = require('../commit_author_stats');
+
+function buildCommitStats(authorStats = {}, overrides = {}) {
+    return {
+        new_commits: 2,
+        lines_added: 15,
+        lines_deleted: 4,
+        authorStats,
+        ...overrides,
+    };
+}
 
 function createDatabaseDouble({ failOn, existingContributorId } = {}) {
     const queries = [];
@@ -20,6 +30,12 @@ function createDatabaseDouble({ failOn, existingContributorId } = {}) {
             }
             if (text.startsWith('SELECT contributor_id')) {
                 return { rows: [{ contributor_id: 41 }] };
+            }
+            if (text.startsWith('INSERT INTO repo_snapshots')) {
+                return { rows: [{ id: 99 }], rowCount: 1 };
+            }
+            if (text.startsWith('UPDATE repo_snapshots') && text.includes('SET new_commits')) {
+                return { rows: [], rowCount: 0 };
             }
             if (text.startsWith('UPDATE contributors') && text.includes('WHERE github_id = $2')) {
                 return { rows: existingContributorId ? [{ id: existingContributorId }] : [] };
@@ -44,11 +60,11 @@ function createDatabaseDouble({ failOn, existingContributorId } = {}) {
 test('commit authors are persisted and organization daily totals are rebuilt', async () => {
     const database = createDatabaseDouble();
 
-    await storeCommitAuthorStats({
+    const result = await persistRepoCommitStats({
         pool: database.pool,
         repoId: 11,
         snapshotDate: '2026-09-02',
-        authorStats: {
+        commitStats: buildCommitStats({
             alice: {
                 github_id: 101,
                 avatar_url: 'https://example.test/alice',
@@ -56,12 +72,18 @@ test('commit authors are persisted and organization daily totals are rebuilt', a
                 lines_added: 15,
                 lines_deleted: 4,
             },
-        },
+        }),
     });
 
     assert.equal(database.queries[0].sql, 'BEGIN');
     assert.equal(database.queries.at(-1).sql, 'COMMIT');
     assert.equal(database.wasReleased(), true);
+    assert.deepEqual(result, { stored: true, snapshotId: 99 });
+
+    const snapshotInsert = database.queries.find((query) =>
+        query.sql.startsWith('INSERT INTO repo_snapshots')
+    );
+    assert.deepEqual(snapshotInsert.params, [11, '2026-09-02', 2, 15, 4]);
 
     const contributorInsert = database.queries.find((query) => query.sql.startsWith('INSERT INTO contributors'));
     assert.deepEqual(contributorInsert.params, [
@@ -90,6 +112,8 @@ test('commit authors are persisted and organization daily totals are rebuilt', a
         query.sql.startsWith('INSERT INTO contributors')
     );
     assert.ok(identityLockIndex < dailyLockIndex);
+    assert.ok(dailyLockIndex < database.queries.indexOf(snapshotInsert));
+    assert.ok(database.queries.indexOf(snapshotInsert) < firstContributorWriteIndex);
     assert.ok(dailyLockIndex < firstContributorWriteIndex);
 
     assert.match(contributorInsert.sql, /first_seen_date = LEAST/);
@@ -122,11 +146,11 @@ test('commit author persistence rolls back and propagates write failures', async
     const database = createDatabaseDouble({ failOn: 'INSERT INTO contributor_repo_activities' });
 
     await assert.rejects(
-        storeCommitAuthorStats({
+        persistRepoCommitStats({
             pool: database.pool,
             repoId: 11,
             snapshotDate: '2026-09-02',
-            authorStats: {
+            commitStats: buildCommitStats({
                 alice: {
                     github_id: 101,
                     avatar_url: null,
@@ -134,24 +158,47 @@ test('commit author persistence rolls back and propagates write failures', async
                     lines_added: 3,
                     lines_deleted: 1,
                 },
-            },
+            }, { new_commits: 1, lines_added: 3, lines_deleted: 1 }),
         }),
         /database write failed/
     );
 
     assert.equal(database.queries.some((query) => query.sql === 'ROLLBACK'), true);
     assert.equal(database.queries.some((query) => query.sql === 'COMMIT'), false);
+    assert.equal(database.queries.some((query) => query.sql.startsWith('INSERT INTO repo_snapshots')), true);
+    assert.equal(database.wasReleased(), true);
+});
+
+test('update-only correction leaves contributor facts untouched when the snapshot is absent', async () => {
+    const database = createDatabaseDouble();
+
+    const result = await persistRepoCommitStats({
+        pool: database.pool,
+        repoId: 11,
+        snapshotDate: '2026-09-02',
+        commitStats: buildCommitStats(),
+        updateOnly: true,
+    });
+
+    assert.deepEqual(result, { stored: false, snapshotId: null });
+    assert.equal(database.queries.at(-1).sql, 'COMMIT');
+    assert.equal(database.queries.some((query) =>
+        query.sql.startsWith('UPDATE contributor_repo_activities')
+    ), false);
+    assert.equal(database.queries.some((query) =>
+        query.sql.startsWith('INSERT INTO contributor_daily_activities')
+    ), false);
     assert.equal(database.wasReleased(), true);
 });
 
 test('commit authors are resolved by stable GitHub ID across username changes', async () => {
     const database = createDatabaseDouble({ existingContributorId: 73 });
 
-    await storeCommitAuthorStats({
+    await persistRepoCommitStats({
         pool: database.pool,
         repoId: 11,
         snapshotDate: '2025-08-01',
-        authorStats: {
+        commitStats: buildCommitStats({
             'alice-renamed': {
                 github_id: 101,
                 avatar_url: 'https://example.test/alice-new',
@@ -159,7 +206,7 @@ test('commit authors are resolved by stable GitHub ID across username changes', 
                 lines_added: 3,
                 lines_deleted: 1,
             },
-        },
+        }, { new_commits: 1, lines_added: 3, lines_deleted: 1 }),
     });
 
     const identityUpdate = database.queries.find((query) =>
@@ -181,11 +228,11 @@ test('commit authors are resolved by stable GitHub ID across username changes', 
 test('cleared commit authors are removed from repository and daily activity summaries', async () => {
     const database = createDatabaseDouble();
 
-    await storeCommitAuthorStats({
+    await persistRepoCommitStats({
         pool: database.pool,
         repoId: 11,
         snapshotDate: '2026-09-02',
-        authorStats: {},
+        commitStats: buildCommitStats({}, { new_commits: 0, lines_added: 0, lines_deleted: 0 }),
     });
 
     const repoActivityDelete = database.queries.find((query) =>
@@ -208,11 +255,11 @@ test('cleared commit authors are removed from repository and daily activity summ
 test('recycled GitHub usernames are detached from the old ID before inserting the new identity', async () => {
     const database = createDatabaseDouble();
 
-    await storeCommitAuthorStats({
+    await persistRepoCommitStats({
         pool: database.pool,
         repoId: 11,
         snapshotDate: '2026-09-02',
-        authorStats: {
+        commitStats: buildCommitStats({
             alice: {
                 github_id: 202,
                 avatar_url: 'https://example.test/new-alice',
@@ -220,7 +267,7 @@ test('recycled GitHub usernames are detached from the old ID before inserting th
                 lines_added: 2,
                 lines_deleted: 0,
             },
-        },
+        }, { new_commits: 1, lines_added: 2, lines_deleted: 0 }),
     });
 
     const recycledUsernameUpdate = database.queries.find((query) =>

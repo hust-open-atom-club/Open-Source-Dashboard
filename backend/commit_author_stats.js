@@ -6,7 +6,14 @@ const {
 } = require('./contributor_daily_aggregation');
 const { upsertContributor } = require('./contributor_identity');
 
-async function storeCommitAuthorStats({ pool, repoId, snapshotDate, authorStats = {} }) {
+async function persistRepoCommitStats({
+    pool,
+    repoId,
+    snapshotDate,
+    commitStats,
+    updateOnly = false,
+}) {
+    const authorStats = commitStats.authorStats || {};
     const client = await pool.connect();
 
     try {
@@ -22,6 +29,47 @@ async function storeCommitAuthorStats({ pool, repoId, snapshotDate, authorStats 
         const orgId = repoResult.rows[0].org_id;
 
         await acquireContributorWriteLocks(client, orgId, snapshotDate);
+
+        const snapshotResult = updateOnly
+            ? await client.query(
+                `UPDATE repo_snapshots
+                 SET new_commits = $1,
+                     lines_added = $2,
+                     lines_deleted = $3,
+                     created_at = NOW()
+                 WHERE repo_id = $4 AND snapshot_date = $5
+                 RETURNING id`,
+                [
+                    commitStats.new_commits,
+                    commitStats.lines_added,
+                    commitStats.lines_deleted,
+                    repoId,
+                    snapshotDate,
+                ]
+            )
+            : await client.query(
+                `INSERT INTO repo_snapshots
+                 (repo_id, snapshot_date, new_commits, lines_added, lines_deleted)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (repo_id, snapshot_date) DO UPDATE
+                 SET new_commits = EXCLUDED.new_commits,
+                     lines_added = EXCLUDED.lines_added,
+                     lines_deleted = EXCLUDED.lines_deleted,
+                     created_at = NOW()
+                 RETURNING id`,
+                [
+                    repoId,
+                    snapshotDate,
+                    commitStats.new_commits,
+                    commitStats.lines_added,
+                    commitStats.lines_deleted,
+                ]
+            );
+
+        if (updateOnly && snapshotResult.rows.length === 0) {
+            await client.query('COMMIT');
+            return { stored: false, snapshotId: null };
+        }
 
         const previousAuthorsResult = await client.query(
             `SELECT contributor_id
@@ -87,6 +135,10 @@ async function storeCommitAuthorStats({ pool, repoId, snapshotDate, authorStats 
         await rebuildRepoActiveContributorCount(client, repoId, snapshotDate);
 
         await client.query('COMMIT');
+        return {
+            stored: true,
+            snapshotId: snapshotResult.rows[0]?.id || null,
+        };
     } catch (error) {
         await client.query('ROLLBACK').catch(() => {});
         throw error;
@@ -96,5 +148,5 @@ async function storeCommitAuthorStats({ pool, repoId, snapshotDate, authorStats 
 }
 
 module.exports = {
-    storeCommitAuthorStats,
+    persistRepoCommitStats,
 };

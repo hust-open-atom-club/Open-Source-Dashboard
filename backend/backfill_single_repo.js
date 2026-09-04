@@ -12,7 +12,8 @@ const {
     DEFAULT_PROPERTY_NAME,
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
-const { storeCommitAuthorStats } = require('./commit_author_stats');
+const { persistRepoCommitStats } = require('./commit_author_stats');
+const { persistRepoApiStats } = require('./contributor_api_stats');
 
 const ORG_NAME = 'hust-open-atom-club';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -148,27 +149,13 @@ async function storeRepoCommitStats(repoId, repoName, targetDate, commitStats) {
     console.log(`[GraphQL Commit Pipeline] ${repoName}@${targetDateStr}: commits=${commitStats.new_commits}, lines=+${commitStats.lines_added}/-${commitStats.lines_deleted}, authors=${authorCount}`);
 
     try {
-        // Use ON CONFLICT to insert a new row or update an existing one.
-        // This makes the process idempotent and safe for parallel execution.
-        const result = await pool.query(
-            `INSERT INTO repo_snapshots (repo_id, snapshot_date, new_commits, lines_added, lines_deleted)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (repo_id, snapshot_date) DO UPDATE
-             SET new_commits = EXCLUDED.new_commits,
-                 lines_added = EXCLUDED.lines_added,
-                 lines_deleted = EXCLUDED.lines_deleted,
-                 created_at = NOW()
-             RETURNING id`,
-            [repoId, targetDateStr, commitStats.new_commits, commitStats.lines_added, commitStats.lines_deleted]
-        );
-        console.log(`[GraphQL Commit Pipeline] ${repoName}@${targetDateStr}: ✅ 已存储到数据库 (id=${result.rows[0].id})`);
-
-        await storeCommitAuthorStats({
+        const result = await persistRepoCommitStats({
             pool,
             repoId,
             snapshotDate: targetDateStr,
-            authorStats: commitStats.authorStats,
+            commitStats,
         });
+        console.log(`[GraphQL Commit Pipeline] ${repoName}@${targetDateStr}: ✅ 已存储到数据库 (id=${result.snapshotId})`);
     } catch (error) {
         console.error(`[GraphQL Commit Pipeline] Error storing commit data for repo ${repoName}:`, error.message);
         // We throw here because a DB error is more critical.
@@ -183,6 +170,7 @@ async function storeRepoCommitStats(repoId, repoName, targetDate, commitStats) {
 async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
     const targetDateStr = formatDate(targetDate);
     let apiMetrics;
+    const contributorDetails = [];
     console.log(`[API Pipeline] Starting to fetch API stats for: ${repoName}`);
 
     try {
@@ -196,19 +184,39 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
         const closedPrs = await githubRest('/search/issues', { q: `${repoQuery} is:pr is:closed closed:${targetDateStr}`, per_page: 100 });
         const closedIssues = await githubRest('/search/issues', { q: `${repoQuery} is:issue -is:pr is:closed closed:${targetDateStr}`, per_page: 100 });
 
-        const activeContributors = new Set();
-        [...createdPrs.items, ...createdIssues.items, ...closedPrs.items, ...closedIssues.items].forEach((item) => {
-            if (!isBotContributor(item.user.login)) {
-                activeContributors.add(item.user.login);
+        const contributorStats = new Map();
+        const recordActivities = (items, metric) => {
+            for (const item of items) {
+                const username = item.user.login;
+                if (isBotContributor(username)) continue;
+
+                if (!contributorStats.has(username)) {
+                    contributorStats.set(username, {
+                        username,
+                        avatar_url: item.user.avatar_url,
+                        github_id: item.user.id,
+                        prs_opened: 0,
+                        prs_closed: 0,
+                        issues_opened: 0,
+                        issues_closed: 0,
+                    });
+                }
+                contributorStats.get(username)[metric]++;
             }
-        });
+        };
+
+        recordActivities(createdPrs.items, 'prs_opened');
+        recordActivities(closedPrs.items, 'prs_closed');
+        recordActivities(createdIssues.items, 'issues_opened');
+        recordActivities(closedIssues.items, 'issues_closed');
+        contributorDetails.push(...contributorStats.values());
 
         apiMetrics = {
             new_prs: createdPrs.total_count,
             closed_merged_prs: closedPrs.total_count,
             new_issues: createdIssues.total_count,
             closed_issues: closedIssues.total_count,
-            active_contributors: activeContributors.size,
+            active_contributors: contributorStats.size,
         };
 
         console.log(`[API Pipeline] ${repoName}@${targetDateStr}: 采集到 PRs=${apiMetrics.new_prs} (closed=${apiMetrics.closed_merged_prs}), Issues=${apiMetrics.new_issues} (closed=${apiMetrics.closed_issues}), contributors=${apiMetrics.active_contributors}`);
@@ -218,21 +226,15 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
     }
 
     try {
-        // This query will insert or update, safely merging with data from the commit pipeline.
-        const result = await pool.query(
-            `INSERT INTO repo_snapshots (repo_id, snapshot_date, new_prs, closed_merged_prs, new_issues, closed_issues, active_contributors)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT (repo_id, snapshot_date) DO UPDATE
-             SET new_prs = EXCLUDED.new_prs,
-                 closed_merged_prs = EXCLUDED.closed_merged_prs,
-                 new_issues = EXCLUDED.new_issues,
-                 closed_issues = EXCLUDED.closed_issues,
-                 active_contributors = EXCLUDED.active_contributors,
-                 created_at = NOW()
-             RETURNING id`,
-            [repoId, targetDateStr, apiMetrics.new_prs, apiMetrics.closed_merged_prs, apiMetrics.new_issues, apiMetrics.closed_issues, apiMetrics.active_contributors]
-        );
-        console.log(`[API Pipeline] ${repoName}@${targetDateStr}: saved in database (id=${result.rows[0].id})`);
+        const result = await persistRepoApiStats({
+            pool,
+            orgName: ORG_NAME,
+            repoId,
+            snapshotDate: targetDateStr,
+            apiMetrics,
+            contributorDetails,
+        });
+        console.log(`[API Pipeline] ${repoName}@${targetDateStr}: saved in database (id=${result.snapshotId})`);
     } catch (error) {
         console.error(`[API Pipeline] Error storing API data for repo ${repoName}:`, error.message);
         throw error;

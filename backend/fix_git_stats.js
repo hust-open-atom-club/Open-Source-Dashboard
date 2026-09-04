@@ -9,7 +9,7 @@ const {
     DEFAULT_PROPERTY_NAME,
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
-const { storeCommitAuthorStats } = require('./commit_author_stats');
+const { persistRepoCommitStats } = require('./commit_author_stats');
 
 const ORG_NAME = 'hust-open-atom-club'; // 确保与主程序一致
 
@@ -74,22 +74,15 @@ async function correctStatsForRepo(repo, targetDate, stats) {
     // 为了日志清晰，将日志移到这里
     console.log(`  - Processing repo [${repo.name}] on ${targetDateStr}...`);
 
-    // 使用 UPDATE 查询，只覆盖 commit 相关的字段
-    // 这里的 stats 变量绝对不会被其他并发任务污染
-    const result = await pool.query(
-        `UPDATE repo_snapshots
-         SET new_commits = $1, lines_added = $2, lines_deleted = $3
-         WHERE repo_id = $4 AND snapshot_date = $5`,
-        [stats.new_commits, stats.lines_added, stats.lines_deleted, repo.id, targetDateStr]
-    );
+    const result = await persistRepoCommitStats({
+        pool,
+        repoId: repo.id,
+        snapshotDate: targetDateStr,
+        commitStats: stats,
+        updateOnly: true,
+    });
 
-    if (result.rowCount > 0) {
-        await storeCommitAuthorStats({
-            pool,
-            repoId: repo.id,
-            snapshotDate: targetDateStr,
-            authorStats: stats.authorStats,
-        });
+    if (result.stored) {
         console.log(`    ✅ Updated [${repo.name}]: commits=${stats.new_commits}, lines=+${stats.lines_added}/-${stats.lines_deleted}`);
     } else {
         console.warn(`    ⚠️ No existing record found for [${repo.name}] on ${targetDateStr}. This is OK if the repo had no API activity on that day.`);

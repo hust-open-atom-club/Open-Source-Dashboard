@@ -15,6 +15,7 @@ const {
 const {
     getPrimaryRateLimitWaitMs,
 } = require('../github_rate_limit');
+const { persistRepoApiStats } = require('../contributor_api_stats');
 
 test('only a confirmed primary rate-limit 403 is retryable', () => {
     const resetTime = Math.floor(Date.now() / 1000) + 60;
@@ -416,7 +417,7 @@ test('the API contributor writer clears stale authors and recomputes commit-only
     assert.equal(queries.at(-1).sql, 'COMMIT');
 });
 
-test('the API contributor writer rolls back and propagates aggregation failures', async () => {
+test('the API snapshot and contributor writer roll back together on aggregation failures', async () => {
     const queries = [];
     let released = false;
     const client = {
@@ -425,6 +426,9 @@ test('the API contributor writer rolls back and propagates aggregation failures'
             queries.push(text);
             if (text.startsWith('SELECT id FROM organizations')) {
                 return { rows: [{ id: 7 }] };
+            }
+            if (text.startsWith('INSERT INTO repo_snapshots')) {
+                return { rows: [{ id: 99 }], rowCount: 1 };
             }
             if (text.startsWith('INSERT INTO contributors')) {
                 return { rows: [{ id: 42 }] };
@@ -440,18 +444,31 @@ test('the API contributor writer rolls back and propagates aggregation failures'
     };
 
     await assert.rejects(
-        storeContributorActivities(11, '2026-09-02', [{
-            username: 'alice',
-            github_id: 101,
-            avatar_url: null,
-            prs_opened: 1,
-            prs_closed: 0,
-            issues_opened: 0,
-            issues_closed: 0,
-        }], { connect: async () => client }),
+        persistRepoApiStats({
+            pool: { connect: async () => client },
+            orgName: 'hust-open-atom-club',
+            repoId: 11,
+            snapshotDate: '2026-09-02',
+            apiMetrics: {
+                new_prs: 1,
+                closed_merged_prs: 0,
+                new_issues: 0,
+                closed_issues: 0,
+            },
+            contributorDetails: [{
+                username: 'alice',
+                github_id: 101,
+                avatar_url: null,
+                prs_opened: 1,
+                prs_closed: 0,
+                issues_opened: 0,
+                issues_closed: 0,
+            }],
+        }),
         /daily aggregation failed/
     );
 
+    assert.equal(queries.some((query) => query.startsWith('INSERT INTO repo_snapshots')), true);
     assert.equal(queries.includes('ROLLBACK'), true);
     assert.equal(queries.includes('COMMIT'), false);
     assert.equal(released, true);

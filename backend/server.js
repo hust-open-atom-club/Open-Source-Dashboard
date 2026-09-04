@@ -14,7 +14,6 @@ const {
 } = require('./github_commit_history');
 const {
     isBotContributor,
-    filterBotContributors,
     buildHumanContributorSqlCondition,
 } = require('./contributor_filters');
 const {
@@ -26,14 +25,11 @@ const {
     MAX_RATE_LIMIT_RETRIES,
     getPrimaryRateLimitWaitMs,
 } = require('./github_rate_limit');
-const { storeCommitAuthorStats } = require('./commit_author_stats');
+const { persistRepoCommitStats } = require('./commit_author_stats');
 const {
-    acquireContributorWriteLocks,
-    deleteEmptyContributorRepoActivities,
-    rebuildContributorDailyActivities,
-    rebuildRepoActiveContributorCount,
-} = require('./contributor_daily_aggregation');
-const { upsertContributor } = require('./contributor_identity');
+    persistRepoApiStats,
+    storeContributorActivities: persistContributorActivities,
+} = require('./contributor_api_stats');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -542,19 +538,14 @@ async function storeRepoApiStatsForDate(repoId, repoName, dateStr, stats, contri
     };
 
     try {
-        await pool.query(
-            `INSERT INTO repo_snapshots (repo_id, snapshot_date, new_prs, closed_merged_prs, new_issues, closed_issues, active_contributors)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT (repo_id, snapshot_date) DO UPDATE
-             SET new_prs = EXCLUDED.new_prs,
-                 closed_merged_prs = EXCLUDED.closed_merged_prs,
-                 new_issues = EXCLUDED.new_issues,
-                 closed_issues = EXCLUDED.closed_issues,
-                 active_contributors = EXCLUDED.active_contributors,
-                 created_at = NOW()`,
-            [repoId, dateStr, apiMetrics.new_prs, apiMetrics.closed_merged_prs, apiMetrics.new_issues, apiMetrics.closed_issues, apiMetrics.active_contributors]
-        );
-        await storeContributorActivities(repoId, dateStr, contributorDetails);
+        await persistRepoApiStats({
+            pool,
+            orgName: ORG_NAME,
+            repoId,
+            snapshotDate: dateStr,
+            apiMetrics,
+            contributorDetails,
+        });
     } catch (error) {
         console.error(`[GraphQL] Error storing stats for ${repoName}@${dateStr}:`, error.message);
     }
@@ -577,27 +568,13 @@ async function storeRepoCommitStats(repoId, repoName, targetDate, commitStats) {
     console.log(`[GraphQL Commit Pipeline] ${repoName}@${targetDateStr}: commits=${commitStats.new_commits}, lines=+${commitStats.lines_added}/-${commitStats.lines_deleted}, authors=${authorCount}`);
 
     try {
-        // Use ON CONFLICT to insert a new row or update an existing one.
-        // This makes the process idempotent and safe for parallel execution.
-        const result = await pool.query(
-            `INSERT INTO repo_snapshots (repo_id, snapshot_date, new_commits, lines_added, lines_deleted)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (repo_id, snapshot_date) DO UPDATE
-             SET new_commits = EXCLUDED.new_commits,
-                 lines_added = EXCLUDED.lines_added,
-                 lines_deleted = EXCLUDED.lines_deleted,
-                 created_at = NOW()
-             RETURNING id`,
-            [repoId, targetDateStr, commitStats.new_commits, commitStats.lines_added, commitStats.lines_deleted]
-        );
-        console.log(`[GraphQL Commit Pipeline] ${repoName}@${targetDateStr}: ✅ 已存储到数据库 (id=${result.rows[0].id})`);
-
-        await storeCommitAuthorStats({
+        const result = await persistRepoCommitStats({
             pool,
             repoId,
             snapshotDate: targetDateStr,
-            authorStats: commitStats.authorStats,
+            commitStats,
         });
+        console.log(`[GraphQL Commit Pipeline] ${repoName}@${targetDateStr}: ✅ 已存储到数据库 (id=${result.snapshotId})`);
     } catch (error) {
         console.error(`[GraphQL Commit Pipeline] Error storing commit data for repo ${repoName}:`, error.message);
         // We throw here because a DB error is more critical.
@@ -627,89 +604,18 @@ async function fetchCommitHistoryForRepositories(repositories, startDate, endDat
  * Stores contributor activities to the database
  */
 async function storeContributorActivities(repoId, dateStr, contributorDetails) {
-    const humanContributorDetails = filterBotContributors(contributorDetails);
-
-    const client = await pool.connect();
     try {
-        await client.query('BEGIN');
-
-        const orgResult = await client.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
-        if (orgResult.rows.length === 0) {
-            throw new Error('Organization not found');
-        }
-        const orgId = orgResult.rows[0].id;
-        await acquireContributorWriteLocks(client, orgId, dateStr);
-
-        const previousContributorsResult = await client.query(
-            `SELECT contributor_id
-             FROM contributor_repo_activities
-             WHERE repo_id = $1
-               AND snapshot_date = $2`,
-            [repoId, dateStr]
-        );
-        const affectedContributorIds = new Set(
-            previousContributorsResult.rows.map((row) => row.contributor_id)
-        );
-
-        await client.query(
-            `UPDATE contributor_repo_activities
-             SET prs_opened = 0,
-                 prs_closed = 0,
-                 issues_opened = 0,
-                 issues_closed = 0
-             WHERE repo_id = $1 AND snapshot_date = $2`,
-            [repoId, dateStr]
-        );
-
-        for (const contributor of humanContributorDetails) {
-            try {
-                // 1. 插入或更新贡献者基本信息
-                const contributorId = await upsertContributor(client, {
-                    username: contributor.username,
-                    githubId: contributor.github_id,
-                    avatarUrl: contributor.avatar_url,
-                    snapshotDate: dateStr,
-                });
-                affectedContributorIds.add(contributorId);
-
-                // 2. 插入贡献者-仓库活动
-                await client.query(
-                    `INSERT INTO contributor_repo_activities 
-                     (contributor_id, repo_id, snapshot_date, prs_opened, prs_closed, issues_opened, issues_closed)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)
-                     ON CONFLICT (contributor_id, repo_id, snapshot_date) DO UPDATE
-                     SET prs_opened = EXCLUDED.prs_opened,
-                         prs_closed = EXCLUDED.prs_closed,
-                         issues_opened = EXCLUDED.issues_opened,
-                         issues_closed = EXCLUDED.issues_closed`,
-                    [contributorId, repoId, dateStr,
-                        contributor.prs_opened, contributor.prs_closed,
-                        contributor.issues_opened, contributor.issues_closed]
-                );
-            } catch (error) {
-                throw new Error(`Error storing contributor ${contributor.username}: ${error.message}`);
-            }
-        }
-
-        await deleteEmptyContributorRepoActivities(client, repoId, dateStr);
-
-        // Rebuild from repository facts so reruns replace values instead of double-counting.
-        await rebuildContributorDailyActivities(
-            client,
-            orgId,
-            dateStr,
-            Array.from(affectedContributorIds)
-        );
-        await rebuildRepoActiveContributorCount(client, repoId, dateStr);
-
-        await client.query('COMMIT');
-        console.log(`[Contributors] Stored ${humanContributorDetails.length} contributors for ${dateStr}`);
+        const storedCount = await persistContributorActivities({
+            pool,
+            orgName: ORG_NAME,
+            repoId,
+            snapshotDate: dateStr,
+            contributorDetails,
+        });
+        console.log(`[Contributors] Stored ${storedCount} contributors for ${dateStr}`);
     } catch (error) {
-        await client.query('ROLLBACK').catch(() => {});
         console.error('[Contributors] Error in storeContributorActivities:', error.message);
         throw error;
-    } finally {
-        client.release();
     }
 }
 
@@ -838,24 +744,15 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
     }
 
     try {
-        // This query will insert or update, safely merging with data from the commit pipeline.
-        const result = await pool.query(
-            `INSERT INTO repo_snapshots (repo_id, snapshot_date, new_prs, closed_merged_prs, new_issues, closed_issues, active_contributors)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT (repo_id, snapshot_date) DO UPDATE
-             SET new_prs = EXCLUDED.new_prs,
-                 closed_merged_prs = EXCLUDED.closed_merged_prs,
-                 new_issues = EXCLUDED.new_issues,
-                 closed_issues = EXCLUDED.closed_issues,
-                 active_contributors = EXCLUDED.active_contributors,
-                 created_at = NOW()
-             RETURNING id`,
-            [repoId, targetDateStr, apiMetrics.new_prs, apiMetrics.closed_merged_prs, apiMetrics.new_issues, apiMetrics.closed_issues, apiMetrics.active_contributors]
-        );
-        console.log(`[API Pipeline] ${repoName}@${targetDateStr}: saved in database (id=${result.rows[0].id})`);
-
-        // Reconcile contributor facts even when this date has no PR/issue authors.
-        await storeContributorActivities(repoId, targetDateStr, contributorDetails);
+        const result = await persistRepoApiStats({
+            pool,
+            orgName: ORG_NAME,
+            repoId,
+            snapshotDate: targetDateStr,
+            apiMetrics,
+            contributorDetails,
+        });
+        console.log(`[API Pipeline] ${repoName}@${targetDateStr}: saved in database (id=${result.snapshotId})`);
     } catch (error) {
         console.error(`[API Pipeline] Error storing API data for repo ${repoName}:`, error.message);
         throw error;
