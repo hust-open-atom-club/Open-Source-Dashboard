@@ -6,14 +6,11 @@ const {
     fetchCommitHistoryViaGraphQL,
 } = require('./github_commit_history');
 const {
-    isBotContributor,
-} = require('./contributor_filters');
-const {
     DEFAULT_PROPERTY_NAME,
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
 const { persistRepoCommitStats } = require('./commit_author_stats');
-const { persistRepoApiStats } = require('./contributor_api_stats');
+const { collectAndPersistRepoApiStats } = require('./repo_api_ingestion');
 
 const ORG_NAME = 'hust-open-atom-club';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -169,74 +166,22 @@ async function storeRepoCommitStats(repoId, repoName, targetDate, commitStats) {
  */
 async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
     const targetDateStr = formatDate(targetDate);
-    let apiMetrics;
-    const contributorDetails = [];
     console.log(`[API Pipeline] Starting to fetch API stats for: ${repoName}`);
 
     try {
-        // This block contains all fallible API calls.
-        const targetDateStr = formatDate(targetDate); // 格式如 "2025-11-08"
-        const repoQuery = `repo:${ORG_NAME}/${repoName}`;
-
-        // 直接在查询中使用 YYYY-MM-DD 格式，GitHub Search API 会自动将其识别为全天
-        const createdPrs = await githubRest('/search/issues', { q: `${repoQuery} is:pr created:${targetDateStr}`, per_page: 100 });
-        const createdIssues = await githubRest('/search/issues', { q: `${repoQuery} is:issue -is:pr created:${targetDateStr}`, per_page: 100 });
-        const closedPrs = await githubRest('/search/issues', { q: `${repoQuery} is:pr is:closed closed:${targetDateStr}`, per_page: 100 });
-        const closedIssues = await githubRest('/search/issues', { q: `${repoQuery} is:issue -is:pr is:closed closed:${targetDateStr}`, per_page: 100 });
-
-        const contributorStats = new Map();
-        const recordActivities = (items, metric) => {
-            for (const item of items) {
-                const username = item.user.login;
-                if (isBotContributor(username)) continue;
-
-                if (!contributorStats.has(username)) {
-                    contributorStats.set(username, {
-                        username,
-                        avatar_url: item.user.avatar_url,
-                        github_id: item.user.id,
-                        prs_opened: 0,
-                        prs_closed: 0,
-                        issues_opened: 0,
-                        issues_closed: 0,
-                    });
-                }
-                contributorStats.get(username)[metric]++;
-            }
-        };
-
-        recordActivities(createdPrs.items, 'prs_opened');
-        recordActivities(closedPrs.items, 'prs_closed');
-        recordActivities(createdIssues.items, 'issues_opened');
-        recordActivities(closedIssues.items, 'issues_closed');
-        contributorDetails.push(...contributorStats.values());
-
-        apiMetrics = {
-            new_prs: createdPrs.total_count,
-            closed_merged_prs: closedPrs.total_count,
-            new_issues: createdIssues.total_count,
-            closed_issues: closedIssues.total_count,
-            active_contributors: contributorStats.size,
-        };
-
-        console.log(`[API Pipeline] ${repoName}@${targetDateStr}: 采集到 PRs=${apiMetrics.new_prs} (closed=${apiMetrics.closed_merged_prs}), Issues=${apiMetrics.new_issues} (closed=${apiMetrics.closed_issues}), contributors=${apiMetrics.active_contributors}`);
-    } catch (error) {
-        console.error(`[API Pipeline] Failed to fetch API metrics for ${repoName}. Storing zero values. Error: ${error.message}`);
-        apiMetrics = { new_prs: 0, closed_merged_prs: 0, new_issues: 0, closed_issues: 0, active_contributors: 0 };
-    }
-
-    try {
-        const result = await persistRepoApiStats({
+        const result = await collectAndPersistRepoApiStats({
+            githubRest,
             pool,
             orgName: ORG_NAME,
             repoId,
+            repoName,
             snapshotDate: targetDateStr,
-            apiMetrics,
-            contributorDetails,
         });
+        const { apiMetrics } = result;
+        console.log(`[API Pipeline] ${repoName}@${targetDateStr}: 采集到 PRs=${apiMetrics.new_prs} (closed=${apiMetrics.closed_merged_prs}), Issues=${apiMetrics.new_issues} (closed=${apiMetrics.closed_issues}), contributors=${apiMetrics.active_contributors}`);
         console.log(`[API Pipeline] ${repoName}@${targetDateStr}: saved in database (id=${result.snapshotId})`);
     } catch (error) {
-        console.error(`[API Pipeline] Error storing API data for repo ${repoName}:`, error.message);
+        console.error(`[API Pipeline] Failed to collect or store API data for ${repoName}; existing data was preserved:`, error.message);
         throw error;
     }
 }
