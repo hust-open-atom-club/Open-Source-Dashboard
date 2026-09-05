@@ -197,14 +197,21 @@ const Dashboard = () => {
             )}
 
             {/* Header */}
-            <div className="flex justify-between items-center mb-8">
-                <div>
-                    <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-600">
-                        Community Insights
-                    </h1>
-                    <p className="text-gray-400 mt-1">Real-time analytics for Open Atom Club</p>
-                </div>
+            <div className="flex flex-col xl:flex-row xl:justify-between xl:items-center gap-6 mb-8">
                 <div className="flex items-center gap-4">
+                    <img
+                        src="/hust-open-atom-club-logo.svg"
+                        alt=""
+                        className="w-16 h-16 shrink-0 rounded-full shadow-lg shadow-blue-950/40"
+                    />
+                    <div>
+                        <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-600">
+                            华科开放原子开源俱乐部
+                        </h1>
+                        <p className="text-lg text-gray-400 mt-1">开源贡献数据看板</p>
+                    </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-4">
                     <ViewSwitcher
                         view={granularity}
                         onViewChange={setGranularity}
