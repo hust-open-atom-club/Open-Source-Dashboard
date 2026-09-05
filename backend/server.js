@@ -1410,6 +1410,8 @@ app.get('/api/v1/organization/summary', async (req, res) => {
                 COALESCE(SUM(new_commits), 0) as new_commits,
                 COALESCE(SUM(lines_added), 0) as lines_added,
                 COALESCE(SUM(lines_deleted), 0) as lines_deleted,
+                (SELECT COUNT(*) FROM repositories WHERE org_id = $1) as organization_repositories,
+                (SELECT COUNT(*) FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL) as tracked_repositories,
                 -- 为了调试和验证，可以返回统计了多少天的数据
                 COUNT(*) as days_counted 
              FROM activity_snapshots
@@ -1436,6 +1438,8 @@ app.get('/api/v1/organization/summary', async (req, res) => {
             new_commits: parseInt(summaryResult.rows[0].new_commits, 10),
             lines_added: parseInt(summaryResult.rows[0].lines_added, 10),
             lines_deleted: parseInt(summaryResult.rows[0].lines_deleted, 10),
+            organization_repositories: parseInt(summaryResult.rows[0].organization_repositories, 10),
+            tracked_repositories: parseInt(summaryResult.rows[0].tracked_repositories, 10),
             active_contributors: parseInt(contributorCountResult.rows[0].unique_contributors, 10),
             days_counted: parseInt(summaryResult.rows[0].days_counted, 10),
             range_days: days, // 在响应中包含请求的范围

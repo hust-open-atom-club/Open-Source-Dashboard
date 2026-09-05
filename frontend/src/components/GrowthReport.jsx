@@ -65,13 +65,13 @@ const GrowthReport = ({ growthData, loading }) => {
                     bgClass={getGrowthBgColor(growth.prs)}
                 />
                 <GrowthMetric 
-                    label="Issue增长" 
+                    label="Issue 增长"
                     value={growth.issues}
                     colorClass={getGrowthColor(growth.issues)}
                     bgClass={getGrowthBgColor(growth.issues)}
                 />
                 <GrowthMetric 
-                    label="Commit增长" 
+                    label="Commit 增长"
                     value={growth.commits}
                     colorClass={getGrowthColor(growth.commits)}
                     bgClass={getGrowthBgColor(growth.commits)}
@@ -107,9 +107,9 @@ const PeriodCard = ({ title, period, highlight }) => {
                 {start} 至 {end}
             </p>
             <div className="space-y-1.5">
-                <MetricRow label="PRs" value={metrics.new_prs} />
-                <MetricRow label="Issues" value={metrics.new_issues} />
-                <MetricRow label="Commits" value={metrics.new_commits} />
+                <MetricRow label="PR" value={metrics.new_prs} />
+                <MetricRow label="Issue" value={metrics.new_issues} />
+                <MetricRow label="Commit" value={metrics.new_commits} />
                 <MetricRow label="新增代码" value={metrics.lines_added} />
                 <MetricRow label="删除代码" value={metrics.lines_deleted} />
             </div>
@@ -137,4 +137,3 @@ const GrowthMetric = ({ label, value, colorClass, bgClass }) => (
 );
 
 export default GrowthReport;
-

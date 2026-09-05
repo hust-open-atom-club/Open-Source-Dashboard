@@ -99,15 +99,15 @@ const ContributorDetailModal = ({ username, range, onClose }) => {
                             <div className="grid grid-cols-3 gap-4">
                                 <div className="bg-gradient-to-br from-purple-500/20 to-purple-600/10 p-4 rounded-xl border border-purple-500/30">
                                     <div className="text-3xl font-bold text-purple-400">{summary.prs}</div>
-                                    <div className="text-sm text-gray-400">Pull Requests</div>
+                                    <div className="text-sm text-gray-400">PR</div>
                                 </div>
                                 <div className="bg-gradient-to-br from-green-500/20 to-green-600/10 p-4 rounded-xl border border-green-500/30">
                                     <div className="text-3xl font-bold text-green-400">{summary.issues}</div>
-                                    <div className="text-sm text-gray-400">Issues</div>
+                                    <div className="text-sm text-gray-400">Issue</div>
                                 </div>
                                 <div className="bg-gradient-to-br from-blue-500/20 to-blue-600/10 p-4 rounded-xl border border-blue-500/30">
                                     <div className="text-3xl font-bold text-blue-400">{summary.commits}</div>
-                                    <div className="text-sm text-gray-400">Commits</div>
+                                    <div className="text-sm text-gray-400">Commit</div>
                                 </div>
                             </div>
 
