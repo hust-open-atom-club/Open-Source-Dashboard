@@ -57,7 +57,7 @@
 | 调度 | node-cron |
 | 前端 | React + Vite |
 | 可视化 | ECharts |
-| Commit 统计 | 本地 Git Clone + `git log` |
+| Commit 统计 | GitHub GraphQL 默认分支历史 |
 
 ## 目录结构
 
@@ -88,7 +88,6 @@ oss-dashboard/
 │   ├── views.sql
 │   ├── migrations/             # 已有数据库升级脚本
 │   └── init/                   # PostgreSQL 容器初始化入口脚本
-├── repos/                      # 本地 Git 仓库存储目录
 └── docker-compose.yml          # Docker Compose 编排文件
 ```
 
@@ -103,7 +102,6 @@ oss-dashboard/
   - Node.js 20+
   - PostgreSQL
   - Redis
-  - Git
 
 ## 快速开始
 
@@ -353,6 +351,8 @@ npm run lint
 - **手动回填**：使用 `backend/run_graphql_backfill.js`
 - **定点回填**：使用 `backend/backfill_date_range.js` 按单天或自定义日期范围修复数据
 - **重聚合**：使用 `backend/run_reaggregation.js`
+
+Commit 数量、增删行和作者统计均来自 GitHub GraphQL 的默认分支历史。历史回填按仓库分页获取指定日期范围，再在本地按日期归档；后端不会 clone 或持久化组织仓库。
 
 注意：
 

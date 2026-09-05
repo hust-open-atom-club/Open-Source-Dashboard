@@ -1,5 +1,3 @@
-const fs = require('fs/promises');
-
 require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
@@ -11,25 +9,33 @@ const { Parser } = require('json2csv');
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 const {
-    cloneOrPullRepoSecure,
-    redactSecrets,
-    runGit,
-} = require('./git_secure');
+    fetchCommitHistoryViaGraphQL,
+    fetchCommitsViaGraphQL,
+} = require('./github_commit_history');
 const {
     isBotContributor,
-    filterBotContributors,
     buildHumanContributorSqlCondition,
 } = require('./contributor_filters');
 const {
     DEFAULT_PROPERTY_NAME,
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
+const { runPromisesWithConcurrency } = require('./promise_concurrency');
+const {
+    MAX_RATE_LIMIT_RETRIES,
+    getPrimaryRateLimitWaitMs,
+} = require('./github_rate_limit');
+const { persistRepoCommitStats } = require('./commit_author_stats');
+const {
+    persistRepoApiStats,
+    storeContributorActivities: persistContributorActivities,
+} = require('./contributor_api_stats');
+const { collectAndPersistRepoApiStats } = require('./repo_api_ingestion');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_API_BASE = 'https://api.github.com';
-const REPO_STORAGE_PATH = path.join(__dirname, '..', 'repos');
 const ORG_NAME = 'hust-open-atom-club';
 const HUMAN_CONTRIBUTOR_SQL = buildHumanContributorSqlCondition('c.github_username');
 const TRACKED_CONTRIBUTOR_ACTIVITY_SQL = `EXISTS (
@@ -276,7 +282,7 @@ async function githubRest(endpoint, params = {}) {
  * @param {object} variables Variables for the query.
  * @returns {Promise<object>} The data portion of the response.
  */
-async function githubGraphQL(query, variables = {}) {
+async function githubGraphQL(query, variables = {}, retryCount = 0) {
     if (!GITHUB_TOKEN) {
         throw new Error("GITHUB_TOKEN is not set in environment variables.");
     }
@@ -305,16 +311,11 @@ async function githubGraphQL(query, variables = {}) {
 
         return response.data.data;
     } catch (error) {
-        if (error.response && error.response.status === 403) {
-            // Rate limit handling
-            const resetTime = error.response.headers['x-ratelimit-reset'];
-            if (resetTime) {
-                const resetDate = new Date(parseInt(resetTime) * 1000);
-                const waitTime = Math.max(0, resetDate.getTime() - Date.now() + 5000);
-                console.warn(`GraphQL Rate limit exceeded. Waiting ${Math.ceil(waitTime / 1000)} seconds...`);
-                await delay(waitTime);
-                return githubGraphQL(query, variables); // Retry
-            }
+        const waitTime = getPrimaryRateLimitWaitMs(error);
+        if (waitTime !== null && retryCount < MAX_RATE_LIMIT_RETRIES) {
+            console.warn(`GraphQL primary rate limit exhausted. Waiting ${Math.ceil(waitTime / 1000)} seconds...`);
+            await delay(waitTime);
+            return githubGraphQL(query, variables, retryCount + 1);
         }
         throw error;
     }
@@ -326,7 +327,7 @@ async function githubGraphQL(query, variables = {}) {
  * @param {string} repoName Repository name
  * @param {Date} startDate Start of date range
  * @param {Date} endDate End of date range
- * @returns {Promise<Map<string, object>>} Map of date string -> stats
+ * @returns {Promise<{statsMap: Map<string, object>, contributorDetailsMap: Map<string, Map>}>}
  */
 async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
     const startDateStr = formatDate(startDate);
@@ -336,17 +337,41 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
 
     // Initialize result map with all dates in range
     const statsMap = new Map();
+    const contributorDetailsMap = new Map();
     const currentDate = new Date(startDate);
     while (currentDate <= endDate) {
-        statsMap.set(formatDate(currentDate), {
+        const dateKey = formatDate(currentDate);
+        statsMap.set(dateKey, {
             new_prs: 0,
             closed_merged_prs: 0,
             new_issues: 0,
             closed_issues: 0,
             active_contributors: new Set(),
         });
+        contributorDetailsMap.set(dateKey, new Map());
         currentDate.setDate(currentDate.getDate() + 1);
     }
+
+    const recordContributorActivity = (dateKey, author, metric) => {
+        if (!statsMap.has(dateKey) || !author?.login || isBotContributor(author.login)) {
+            return;
+        }
+
+        statsMap.get(dateKey).active_contributors.add(author.login);
+        const contributorsForDate = contributorDetailsMap.get(dateKey);
+        if (!contributorsForDate.has(author.login)) {
+            contributorsForDate.set(author.login, {
+                username: author.login,
+                avatar_url: author.avatarUrl || null,
+                github_id: author.databaseId || null,
+                prs_opened: 0,
+                prs_closed: 0,
+                issues_opened: 0,
+                issues_closed: 0,
+            });
+        }
+        contributorsForDate.get(author.login)[metric]++;
+    };
 
     // GraphQL query to fetch PRs and Issues
     const query = `
@@ -360,7 +385,11 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                         closedAt
                         mergedAt
                         state
-                        author { login }
+                        author {
+                            login
+                            avatarUrl
+                            ... on User { databaseId }
+                        }
                     }
                 }
                 issues(first: 100, after: $issueCursor, orderBy: {field: CREATED_AT, direction: DESC}) {
@@ -370,7 +399,11 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                         createdAt
                         closedAt
                         state
-                        author { login }
+                        author {
+                            login
+                            avatarUrl
+                            ... on User { databaseId }
+                        }
                     }
                 }
             }
@@ -393,7 +426,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
 
             if (!data.repository) {
                 console.warn(`[GraphQL] Repository ${repoName} not found or inaccessible.`);
-                return statsMap;
+                return { statsMap, contributorDetailsMap };
             }
 
             const prs = data.repository.pullRequests;
@@ -407,15 +440,14 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                 if (createdDate && createdDate >= startDateStr && createdDate <= endDateStr) {
                     if (statsMap.has(createdDate)) {
                         statsMap.get(createdDate).new_prs++;
-                        if (pr.author?.login && !isBotContributor(pr.author.login)) {
-                            statsMap.get(createdDate).active_contributors.add(pr.author.login);
-                        }
+                        recordContributorActivity(createdDate, pr.author, 'prs_opened');
                     }
                 }
 
                 if (closedDate && closedDate >= startDateStr && closedDate <= endDateStr) {
                     if (statsMap.has(closedDate)) {
                         statsMap.get(closedDate).closed_merged_prs++;
+                        recordContributorActivity(closedDate, pr.author, 'prs_closed');
                     }
                 }
 
@@ -456,15 +488,14 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
                 if (createdDate && createdDate >= startDateStr && createdDate <= endDateStr) {
                     if (statsMap.has(createdDate)) {
                         statsMap.get(createdDate).new_issues++;
-                        if (issue.author?.login && !isBotContributor(issue.author.login)) {
-                            statsMap.get(createdDate).active_contributors.add(issue.author.login);
-                        }
+                        recordContributorActivity(createdDate, issue.author, 'issues_opened');
                     }
                 }
 
                 if (closedDate && closedDate >= startDateStr && closedDate <= endDateStr) {
                     if (statsMap.has(closedDate)) {
                         statsMap.get(closedDate).closed_issues++;
+                        recordContributorActivity(closedDate, issue.author, 'issues_closed');
                     }
                 }
 
@@ -483,11 +514,11 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
         }
 
         console.log(`[GraphQL] ${repoName}: Fetched ${totalPrsFetched} PRs for ${totalIssuesFetched} Issues.`);
-        return statsMap;
+        return { statsMap, contributorDetailsMap };
 
     } catch (error) {
         console.error(`[GraphQL] Error fetching stats for ${repoName}:`, error.message);
-        return statsMap;
+        return { statsMap, contributorDetailsMap };
     }
 }
 
@@ -498,7 +529,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
  * @param {string} dateStr Date string (YYYY-MM-DD)
  * @param {object} stats Stats object with new_prs, closed_merged_prs, etc.
  */
-async function storeRepoApiStatsForDate(repoId, repoName, dateStr, stats) {
+async function storeRepoApiStatsForDate(repoId, repoName, dateStr, stats, contributorDetails = []) {
     const apiMetrics = {
         new_prs: stats.new_prs || 0,
         closed_merged_prs: stats.closed_merged_prs || 0,
@@ -508,430 +539,111 @@ async function storeRepoApiStatsForDate(repoId, repoName, dateStr, stats) {
     };
 
     try {
-        await pool.query(
-            `INSERT INTO repo_snapshots (repo_id, snapshot_date, new_prs, closed_merged_prs, new_issues, closed_issues, active_contributors)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT (repo_id, snapshot_date) DO UPDATE
-             SET new_prs = EXCLUDED.new_prs,
-                 closed_merged_prs = EXCLUDED.closed_merged_prs,
-                 new_issues = EXCLUDED.new_issues,
-                 closed_issues = EXCLUDED.closed_issues,
-                 active_contributors = EXCLUDED.active_contributors,
-                 created_at = NOW()`,
-            [repoId, dateStr, apiMetrics.new_prs, apiMetrics.closed_merged_prs, apiMetrics.new_issues, apiMetrics.closed_issues, apiMetrics.active_contributors]
-        );
-    } catch (error) {
-        console.error(`[GraphQL] Error storing stats for ${repoName}@${dateStr}:`, error.message);
-    }
-}
-
-// --- Git Commit Statistics Service ---
-
-/**
- * Clones or pulls a repository and returns the path.
- */
-async function cloneOrPullRepo(repoName) {
-    const repoPath = path.join(REPO_STORAGE_PATH, repoName);
-
-    try {
-        return await cloneOrPullRepoSecure({
-            repoName,
-            repoStoragePath: REPO_STORAGE_PATH,
+        await persistRepoApiStats({
+            pool,
             orgName: ORG_NAME,
+            repoId,
+            snapshotDate: dateStr,
+            apiMetrics,
+            contributorDetails,
         });
     } catch (error) {
-        console.error(`${repoName}: operate failed\n${redactSecrets(error.message)}`);
-        // 确保目录存在，即使 git 操作失败
-        await fs.mkdir(repoPath, { recursive: true }).catch(() => { });
-        return repoPath;
-    }
-}
-
-/**
- * Gets commit stats for a repository within a 24-hour window using git log.
- */
-async function getCommitStats(repoName, targetDate) {
-    const repoPath = await cloneOrPullRepo(repoName);
-
-    const startDate = new Date(targetDate);
-    startDate.setHours(0, 0, 0, 0);
-
-    const endDate = new Date(targetDate);
-    endDate.setDate(endDate.getDate() + 1);
-    endDate.setHours(0, 0, 0, 0);
-
-    // 使用我们之前修复过的、时区正确的 formatDate 函数
-    const endISO = formatDate(endDate);
-    const startISO = formatDate(startDate);
-
-    try {
-        const { stdout } = await runGit([
-            '-C',
-            repoPath,
-            'log',
-            `--since=${startISO}`,
-            `--until=${endISO}`,
-            '--pretty=format:COMMIT_SEPARATOR%an',
-            '--numstat',
-        ], { maxBuffer: 1024 * 1024 * 10 });
-        if (!stdout.trim()) {
-            return { new_commits: 0, lines_added: 0, lines_deleted: 0, committers: new Set() };
-        }
-
-        const lines = stdout.trim().split('\n');
-
-        let newCommits = 0;
-        let linesAdded = 0;
-        let linesDeleted = 0;
-        const committers = new Set();
-
-        // --- BUG FIX: 使用更健壮的解析逻辑 ---
-        for (const line of lines) {
-            if (line.startsWith('COMMIT_SEPARATOR')) {
-                // 这是一个新的 commit，我们提取作者名
-                newCommits++;
-                const author = line.substring('COMMIT_SEPARATOR'.length).trim();
-                if (author) {
-                    committers.add(author);
-                }
-            } else {
-                // 这是一个潜在的 numstat 行，我们需要严格验证它
-                const parts = line.split('\t');
-
-                // 验证：必须有3个部分，且前两个部分必须是数字或'-'
-                if (parts.length === 3) {
-                    const isInsertionsValid = !isNaN(parseInt(parts[0], 10)) || parts[0] === '-';
-                    const isDeletionsValid = !isNaN(parseInt(parts[1], 10)) || parts[1] === '-';
-
-                    if (isInsertionsValid && isDeletionsValid) {
-                        // 确认这是一个合法的 numstat 行，再进行解析
-                        const insertions = parseInt(parts[0], 10);
-                        const deletions = parseInt(parts[1], 10);
-
-                        if (!isNaN(insertions)) {
-                            linesAdded += insertions;
-                        }
-                        if (!isNaN(deletions)) {
-                            linesDeleted += deletions;
-                        }
-                    }
-                    // 如果验证失败，我们会静默地忽略这一行，因为它不是我们想要的 numstat 数据
-                }
-            }
-        }
-
-        return {
-            new_commits: newCommits,
-            lines_added: linesAdded,
-            lines_deleted: linesDeleted,
-            committers: committers,
-        };
-
-    } catch (error) {
-        console.error(`Git command failed for ${repoName}\n${redactSecrets(error.message)}`);
-        return { new_commits: 0, lines_added: 0, lines_deleted: 0, committers: new Set() };
+        console.error(`[GraphQL] Error storing stats for ${repoName}@${dateStr}:`, error.message);
     }
 }
 
 // --- Data Ingestion Service (Cron Job & Backfill) ---
 
 /**
- * [PIPELINE 1] Fetches ONLY commit stats via Git and stores them.
+ * [PIPELINE 1] Fetches commit history via GraphQL and stores it.
  * This process is completely independent of the API fetching process.
  */
 async function fetchAndStoreRepoCommitStats(repoId, repoName, targetDate) {
+    const commitStats = await fetchCommitsViaGraphQL(repoName, targetDate, githubGraphQL, ORG_NAME);
+    await storeRepoCommitStats(repoId, repoName, targetDate, commitStats);
+}
+
+async function storeRepoCommitStats(repoId, repoName, targetDate, commitStats) {
     const targetDateStr = formatDate(targetDate);
-    let commitStats;
+    const authorCount = Object.keys(commitStats.authorStats).length;
+    console.log(`[GraphQL Commit Pipeline] ${repoName}@${targetDateStr}: commits=${commitStats.new_commits}, lines=+${commitStats.lines_added}/-${commitStats.lines_deleted}, authors=${authorCount}`);
 
     try {
-        // This is the only fallible operation in this pipeline
-        commitStats = await getCommitStats(repoName, targetDate);
-        console.log(`[Git Pipeline] ${repoName}@${targetDateStr}: 采集到 commits=${commitStats.new_commits}, lines=+${commitStats.lines_added}/-${commitStats.lines_deleted}, committers=${commitStats.committers.size}`);
+        const result = await persistRepoCommitStats({
+            pool,
+            repoId,
+            snapshotDate: targetDateStr,
+            commitStats,
+        });
+        console.log(`[GraphQL Commit Pipeline] ${repoName}@${targetDateStr}: ✅ 已存储到数据库 (id=${result.snapshotId})`);
     } catch (error) {
-        console.error(`[Git Pipeline] Failed to get commit stats for ${repoName}. Storing zero values. Error: ${error.message}`);
-        // If git log fails, we ensure zero values are stored for these specific fields.
-        commitStats = { new_commits: 0, lines_added: 0, lines_deleted: 0, committers: new Set() };
-    }
-
-    try {
-        // Use ON CONFLICT to insert a new row or update an existing one.
-        // This makes the process idempotent and safe for parallel execution.
-        const result = await pool.query(
-            `INSERT INTO repo_snapshots (repo_id, snapshot_date, new_commits, lines_added, lines_deleted)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (repo_id, snapshot_date) DO UPDATE
-             SET new_commits = EXCLUDED.new_commits,
-                 lines_added = EXCLUDED.lines_added,
-                 lines_deleted = EXCLUDED.lines_deleted,
-                 created_at = NOW()
-             RETURNING id`,
-            [repoId, targetDateStr, commitStats.new_commits, commitStats.lines_added, commitStats.lines_deleted]
-        );
-        console.log(`[Git Pipeline] ${repoName}@${targetDateStr}: ✅ 已存储到数据库 (id=${result.rows[0].id})`);
-    } catch (error) {
-        console.error(`[Git Pipeline] Error storing commit data for repo ${repoName}:`, error.message);
+        console.error(`[GraphQL Commit Pipeline] Error storing commit data for repo ${repoName}:`, error.message);
         // We throw here because a DB error is more critical.
         throw error;
     }
+}
+
+async function fetchCommitHistoryForRepositories(repositories, startDate, endDate) {
+    const historyByRepoId = new Map();
+    const tasks = repositories.map((repo) => async () => {
+        const statsMap = await fetchCommitHistoryViaGraphQL(
+            repo.name,
+            startDate,
+            endDate,
+            githubGraphQL,
+            ORG_NAME
+        );
+        historyByRepoId.set(repo.id, statsMap);
+        console.log(`[GraphQL Commits] ${repo.name}: fetched ${statsMap.size} days`);
+    });
+
+    await runPromisesWithConcurrency(tasks, 5);
+    return historyByRepoId;
 }
 
 /**
  * Stores contributor activities to the database
  */
 async function storeContributorActivities(repoId, dateStr, contributorDetails) {
-    const humanContributorDetails = filterBotContributors(contributorDetails);
-    if (humanContributorDetails.length === 0) return;
-
     try {
-        const orgResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
-        if (orgResult.rows.length === 0) {
-            console.error('[Contributors] Organization not found');
-            return;
-        }
-        const orgId = orgResult.rows[0].id;
-
-        for (const contributor of humanContributorDetails) {
-            try {
-                // 1. 插入或更新贡献者基本信息
-                const contributorResult = await pool.query(
-                    `INSERT INTO contributors (github_username, github_id, avatar_url, first_seen_date, last_seen_date)
-                     VALUES ($1, $2, $3, $4, $4)
-                     ON CONFLICT (github_username) DO UPDATE
-                     SET last_seen_date = GREATEST(contributors.last_seen_date, EXCLUDED.last_seen_date),
-                         avatar_url = EXCLUDED.avatar_url,
-                         github_id = COALESCE(contributors.github_id, EXCLUDED.github_id),
-                         updated_at = NOW()
-                     RETURNING id`,
-                    [contributor.username, contributor.github_id, contributor.avatar_url, dateStr]
-                );
-
-                const contributorId = contributorResult.rows[0].id;
-
-                // 2. 插入贡献者-仓库活动
-                await pool.query(
-                    `INSERT INTO contributor_repo_activities 
-                     (contributor_id, repo_id, snapshot_date, prs_opened, prs_closed, issues_opened, issues_closed)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)
-                     ON CONFLICT (contributor_id, repo_id, snapshot_date) DO UPDATE
-                     SET prs_opened = contributor_repo_activities.prs_opened + EXCLUDED.prs_opened,
-                         prs_closed = contributor_repo_activities.prs_closed + EXCLUDED.prs_closed,
-                         issues_opened = contributor_repo_activities.issues_opened + EXCLUDED.issues_opened,
-                         issues_closed = contributor_repo_activities.issues_closed + EXCLUDED.issues_closed`,
-                    [contributorId, repoId, dateStr,
-                        contributor.prs_opened, contributor.prs_closed,
-                        contributor.issues_opened, contributor.issues_closed]
-                );
-
-                // 3. 更新贡献者每日活动（聚合到组织级别）
-                await pool.query(
-                    `INSERT INTO contributor_daily_activities 
-                     (contributor_id, org_id, snapshot_date, prs_opened, prs_closed, issues_opened, issues_closed, active_repos_count)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
-                     ON CONFLICT (contributor_id, org_id, snapshot_date) DO UPDATE
-                     SET prs_opened = contributor_daily_activities.prs_opened + EXCLUDED.prs_opened,
-                         prs_closed = contributor_daily_activities.prs_closed + EXCLUDED.prs_closed,
-                         issues_opened = contributor_daily_activities.issues_opened + EXCLUDED.issues_opened,
-                         issues_closed = contributor_daily_activities.issues_closed + EXCLUDED.issues_closed,
-                         active_repos_count = contributor_daily_activities.active_repos_count + 1`,
-                    [contributorId, orgId, dateStr,
-                        contributor.prs_opened, contributor.prs_closed,
-                        contributor.issues_opened, contributor.issues_closed]
-                );
-
-            } catch (error) {
-                console.error(`[Contributors] Error storing contributor ${contributor.username}:`, error.message);
-            }
-        }
-
-        console.log(`[Contributors] Stored ${humanContributorDetails.length} contributors for ${dateStr}`);
+        const storedCount = await persistContributorActivities({
+            pool,
+            orgName: ORG_NAME,
+            repoId,
+            snapshotDate: dateStr,
+            contributorDetails,
+        });
+        console.log(`[Contributors] Stored ${storedCount} contributors for ${dateStr}`);
     } catch (error) {
         console.error('[Contributors] Error in storeContributorActivities:', error.message);
-    }
-}
-
-/**
- * [PIPELINE 2] Fetches ONLY API-related stats (PRs, Issues) and stores them.
- * This process is completely independent of the Git stats process.
- */
-async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
-    const targetDateStr = formatDate(targetDate);
-    let apiMetrics;
-    const contributorDetails = []; // 新增：保存贡献者详情
-    console.log(`[API Pipeline] Starting to fetch API stats for: ${repoName}`);
-
-    try {
-        // This block contains all fallible API calls.
-        const targetDateStr = formatDate(targetDate); // 格式如 "2025-11-08"
-        const repoQuery = `repo:${ORG_NAME}/${repoName}`;
-
-        // 直接在查询中使用 YYYY-MM-DD 格式，GitHub Search API 会自动将其识别为全天
-        const createdPrs = await githubRest('/search/issues', { q: `${repoQuery} is:pr created:${targetDateStr}`, per_page: 100 });
-        const createdIssues = await githubRest('/search/issues', { q: `${repoQuery} is:issue -is:pr created:${targetDateStr}`, per_page: 100 });
-        const closedPrs = await githubRest('/search/issues', { q: `${repoQuery} is:pr is:closed closed:${targetDateStr}`, per_page: 100 });
-        const closedIssues = await githubRest('/search/issues', { q: `${repoQuery} is:issue -is:pr is:closed closed:${targetDateStr}`, per_page: 100 });
-
-        const activeContributors = new Set();
-        const contributorStats = new Map(); // 新增：统计每个贡献者的活动
-
-        // 处理 PR 开启
-        createdPrs.items.forEach(item => {
-            const username = item.user.login;
-            if (isBotContributor(username)) {
-                return;
-            }
-            activeContributors.add(username);
-            if (!contributorStats.has(username)) {
-                contributorStats.set(username, {
-                    username,
-                    avatar_url: item.user.avatar_url,
-                    github_id: item.user.id,
-                    prs_opened: 0,
-                    prs_closed: 0,
-                    issues_opened: 0,
-                    issues_closed: 0
-                });
-            }
-            contributorStats.get(username).prs_opened++;
-        });
-
-        // 处理 PR 关闭
-        closedPrs.items.forEach(item => {
-            const username = item.user.login;
-            if (isBotContributor(username)) {
-                return;
-            }
-            activeContributors.add(username);
-            if (!contributorStats.has(username)) {
-                contributorStats.set(username, {
-                    username,
-                    avatar_url: item.user.avatar_url,
-                    github_id: item.user.id,
-                    prs_opened: 0,
-                    prs_closed: 0,
-                    issues_opened: 0,
-                    issues_closed: 0
-                });
-            }
-            contributorStats.get(username).prs_closed++;
-        });
-
-        // 处理 Issue 开启
-        createdIssues.items.forEach(item => {
-            const username = item.user.login;
-            if (isBotContributor(username)) {
-                return;
-            }
-            activeContributors.add(username);
-            if (!contributorStats.has(username)) {
-                contributorStats.set(username, {
-                    username,
-                    avatar_url: item.user.avatar_url,
-                    github_id: item.user.id,
-                    prs_opened: 0,
-                    prs_closed: 0,
-                    issues_opened: 0,
-                    issues_closed: 0
-                });
-            }
-            contributorStats.get(username).issues_opened++;
-        });
-
-        // 处理 Issue 关闭
-        closedIssues.items.forEach(item => {
-            const username = item.user.login;
-            if (isBotContributor(username)) {
-                return;
-            }
-            activeContributors.add(username);
-            if (!contributorStats.has(username)) {
-                contributorStats.set(username, {
-                    username,
-                    avatar_url: item.user.avatar_url,
-                    github_id: item.user.id,
-                    prs_opened: 0,
-                    prs_closed: 0,
-                    issues_opened: 0,
-                    issues_closed: 0
-                });
-            }
-            contributorStats.get(username).issues_closed++;
-        });
-
-        apiMetrics = {
-            new_prs: createdPrs.total_count,
-            closed_merged_prs: closedPrs.total_count,
-            new_issues: createdIssues.total_count,
-            closed_issues: closedIssues.total_count,
-            active_contributors: activeContributors.size,
-        };
-
-        contributorDetails.push(...contributorStats.values());
-
-        console.log(`[API Pipeline] ${repoName}@${targetDateStr}: 采集到 PRs=${apiMetrics.new_prs} (closed=${apiMetrics.closed_merged_prs}), Issues=${apiMetrics.new_issues} (closed=${apiMetrics.closed_issues}), contributors=${apiMetrics.active_contributors}`);
-    } catch (error) {
-        console.error(`[API Pipeline] Failed to fetch API metrics for ${repoName}. Storing zero values. Error: ${error.message}`);
-        apiMetrics = { new_prs: 0, closed_merged_prs: 0, new_issues: 0, closed_issues: 0, active_contributors: 0 };
-    }
-
-    try {
-        // This query will insert or update, safely merging with data from the commit pipeline.
-        const result = await pool.query(
-            `INSERT INTO repo_snapshots (repo_id, snapshot_date, new_prs, closed_merged_prs, new_issues, closed_issues, active_contributors)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT (repo_id, snapshot_date) DO UPDATE
-             SET new_prs = EXCLUDED.new_prs,
-                 closed_merged_prs = EXCLUDED.closed_merged_prs,
-                 new_issues = EXCLUDED.new_issues,
-                 closed_issues = EXCLUDED.closed_issues,
-                 active_contributors = EXCLUDED.active_contributors,
-                 created_at = NOW()
-             RETURNING id`,
-            [repoId, targetDateStr, apiMetrics.new_prs, apiMetrics.closed_merged_prs, apiMetrics.new_issues, apiMetrics.closed_issues, apiMetrics.active_contributors]
-        );
-        console.log(`[API Pipeline] ${repoName}@${targetDateStr}: saved in database (id=${result.rows[0].id})`);
-
-        // 新增：保存贡献者数据
-        if (contributorDetails.length > 0) {
-            await storeContributorActivities(repoId, targetDateStr, contributorDetails);
-        }
-    } catch (error) {
-        console.error(`[API Pipeline] Error storing API data for repo ${repoName}:`, error.message);
         throw error;
     }
 }
 
 /**
- * Runs an array of promise-returning functions with limited concurrency.
- * @param {Array<() => Promise<any>>} tasks An array of functions that each return a Promise.
- * @param {number} concurrency The maximum number of tasks to run at once.
- * @returns {Promise<any[]>} A promise that resolves with an array of all task results.
+ * [PIPELINE 2] Fetches ONLY API-related stats (PRs, Issues) and stores them.
+ * This process is completely independent of the commit-history process.
  */
-async function runPromisesWithConcurrency(tasks, concurrency) {
-    const results = [];
-    let currentIndex = 0;
+async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
+    const targetDateStr = formatDate(targetDate);
+    console.log(`[API Pipeline] Starting to fetch API stats for: ${repoName}`);
 
-    // The worker function that processes tasks one by one from the tasks array.
-    const worker = async () => {
-        while (currentIndex < tasks.length) {
-            const taskIndex = currentIndex++;
-            const task = tasks[taskIndex];
-            try {
-                results[taskIndex] = await task();
-            } catch (error) {
-                // Store error to review later if needed, or handle it
-                results[taskIndex] = error;
-                console.error(`Task at index ${taskIndex} failed:`, error.message);
-            }
-        }
-    };
-
-    // Create and start the workers.
-    const workers = Array(concurrency).fill(null).map(() => worker());
-
-    // Wait for all workers to complete.
-    await Promise.all(workers);
-
-    return results;
+    try {
+        const result = await collectAndPersistRepoApiStats({
+            githubRest,
+            pool,
+            orgName: ORG_NAME,
+            repoId,
+            repoName,
+            snapshotDate: targetDateStr,
+        });
+        const { apiMetrics } = result;
+        console.log(`[API Pipeline] ${repoName}@${targetDateStr}: 采集到 PRs=${apiMetrics.new_prs} (closed=${apiMetrics.closed_merged_prs}), Issues=${apiMetrics.new_issues} (closed=${apiMetrics.closed_issues}), contributors=${apiMetrics.active_contributors}`);
+        console.log(`[API Pipeline] ${repoName}@${targetDateStr}: saved in database (id=${result.snapshotId})`);
+    } catch (error) {
+        console.error(`[API Pipeline] Failed to collect or store API data for ${repoName}; existing data was preserved:`, error.message);
+        throw error;
+    }
 }
 
 /**
@@ -1136,18 +848,17 @@ async function runDailyIngestionJob() {
             return;
         }
 
-        // Git操作可以并发更高（不受API限流影响），API操作并发较低（避免限流）
-        const gitConcurrencyLimit = 5; // Git操作并发5个
+        const commitConcurrencyLimit = 5;
         const apiConcurrencyLimit = 3; // API操作并发3个（每分钟30次，3个并发×2秒间隔=6秒，安全）
-        console.log(`Processing ${repositories.length} repos with Git concurrency: ${gitConcurrencyLimit}, API concurrency: ${apiConcurrencyLimit}`);
+        console.log(`Processing ${repositories.length} repos with GraphQL commit concurrency: ${commitConcurrencyLimit}, API concurrency: ${apiConcurrencyLimit}`);
 
-        // --- PIPELINE 1: Process all Git-based stats ---
-        console.log('\n--- [Phase 1/3] Starting Git Commit Stats Ingestion ---');
+        // --- PIPELINE 1: Process all GraphQL commit stats ---
+        console.log('\n--- [Phase 1/3] Starting GraphQL Commit Stats Ingestion ---');
         const commitTasks = repositories.map(repo =>
             () => fetchAndStoreRepoCommitStats(repo.id, repo.name, targetDate)
         );
-        await runPromisesWithConcurrency(commitTasks, gitConcurrencyLimit);
-        console.log('--- [Phase 1/3] Git Commit Stats Ingestion Finished ---');
+        await runPromisesWithConcurrency(commitTasks, commitConcurrencyLimit);
+        console.log('--- [Phase 1/3] GraphQL Commit Stats Ingestion Finished ---');
 
         // --- PIPELINE 2: Process all API-based stats ---
         console.log('\n--- [Phase 2/3] Starting GitHub API Stats Ingestion ---');
@@ -1288,6 +999,23 @@ async function runBackfillJob(days = 7) {
         console.log(`repo nums: ${repositories.length}`);
         console.log(`SIG nums: ${sigs.length}\n`);
 
+        const datesToBackfill = [];
+        for (let i = days; i >= 1; i--) {
+            const targetDate = new Date(today);
+            targetDate.setDate(today.getDate() - i);
+            if (!existingDates.has(formatDate(targetDate))) {
+                datesToBackfill.push(targetDate);
+            }
+        }
+
+        const commitHistoryByRepoId = datesToBackfill.length > 0
+            ? await fetchCommitHistoryForRepositories(
+                repositories,
+                datesToBackfill[0],
+                datesToBackfill[datesToBackfill.length - 1]
+            )
+            : new Map();
+
         // Loop from the oldest day (30 days ago) to yesterday to backfill data
         for (let i = days; i >= 1; i--) {
             const targetDate = new Date(today);
@@ -1300,17 +1028,21 @@ async function runBackfillJob(days = 7) {
             }
 
             console.log(`\n--- Backfilling data for date: ${targetDateStr} ---`);
-            // Git操作可以并发更高，API操作并发较低
-            const gitConcurrencyLimit = 5;
+            const commitConcurrencyLimit = 5;
             const apiConcurrencyLimit = 3;
 
-            // --- PIPELINE 1: Process all Git-based stats for the target date ---
-            console.log(`[${targetDateStr}] [Phase 1/3] Starting Git Commit Stats Backfill...`);
+            // --- PIPELINE 1: Process all GraphQL commit stats for the target date ---
+            console.log(`[${targetDateStr}] [Phase 1/3] Starting GraphQL Commit Stats Backfill...`);
             const commitTasks = repositories.map(repo =>
-                () => fetchAndStoreRepoCommitStats(repo.id, repo.name, targetDate)
+                () => storeRepoCommitStats(
+                    repo.id,
+                    repo.name,
+                    targetDate,
+                    commitHistoryByRepoId.get(repo.id).get(targetDateStr)
+                )
             );
-            await runPromisesWithConcurrency(commitTasks, gitConcurrencyLimit);
-            console.log(`[${targetDateStr}] [Phase 1/3] Git Commit Stats Backfill Finished.`);
+            await runPromisesWithConcurrency(commitTasks, commitConcurrencyLimit);
+            console.log(`[${targetDateStr}] [Phase 1/3] GraphQL Commit Stats Backfill Finished.`);
 
             // --- PIPELINE 2: Process all API-based stats for the target date ---
             console.log(`[${targetDateStr}] [Phase 2/3] Starting GitHub API Stats Backfill...`);
@@ -1438,23 +1170,21 @@ async function runBackfillJobWithGraphQL(days = 30) {
         console.log(`Repositories: ${repositories.length}`);
         console.log(`SIGs: ${sigs.length}\n`);
 
-        // === PHASE 1: Git Commit Stats (unchanged, still per-day) ===
-        console.log('=== PHASE 1: Git Commit Stats ===');
-        console.log('Note: Git stats are collected per-day as they require local git operations.\n');
+        // === PHASE 1: GraphQL Commit Stats ===
+        console.log('=== PHASE 1: GraphQL Commit Stats ===');
+        console.log('Commit history is collected from each repository default branch via GraphQL.\n');
 
-        const gitConcurrencyLimit = 5;
-
-        for (let i = days; i >= 1; i--) {
-            const targetDate = new Date(today);
-            targetDate.setDate(today.getDate() - i);
-            const targetDateStr = formatDate(targetDate);
-
-            console.log(`[Git] Processing ${targetDateStr}...`);
-            const commitTasks = repositories.map(repo =>
-                () => fetchAndStoreRepoCommitStats(repo.id, repo.name, targetDate)
-            );
-            await runPromisesWithConcurrency(commitTasks, gitConcurrencyLimit);
-        }
+        const commitConcurrencyLimit = 5;
+        const commitHistoryByRepoId = await fetchCommitHistoryForRepositories(repositories, startDate, endDate);
+        const commitTasks = repositories.map((repo) => async () => {
+            const statsMap = commitHistoryByRepoId.get(repo.id);
+            for (let i = days; i >= 1; i--) {
+                const targetDate = new Date(today);
+                targetDate.setDate(today.getDate() - i);
+                await storeRepoCommitStats(repo.id, repo.name, targetDate, statsMap.get(formatDate(targetDate)));
+            }
+        });
+        await runPromisesWithConcurrency(commitTasks, commitConcurrencyLimit);
         console.log('=== PHASE 1 Complete ===\n');
 
         // === PHASE 2: GraphQL API Stats (batch per-repo) ===
@@ -1466,11 +1196,24 @@ async function runBackfillJobWithGraphQL(days = 30) {
         const graphqlTasks = repositories.map(repo => async () => {
             try {
                 // Fetch all stats for this repo in one batch
-                const statsMap = await fetchRepoStatsViaGraphQL(repo.name, startDate, endDate);
+                const { statsMap, contributorDetailsMap } = await fetchRepoStatsViaGraphQL(
+                    repo.name,
+                    startDate,
+                    endDate
+                );
 
                 // Store each date's stats to the database
                 for (const [dateStr, stats] of statsMap) {
-                    await storeRepoApiStatsForDate(repo.id, repo.name, dateStr, stats);
+                    const contributorDetails = contributorDetailsMap.has(dateStr)
+                        ? Array.from(contributorDetailsMap.get(dateStr).values())
+                        : [];
+                    await storeRepoApiStatsForDate(
+                        repo.id,
+                        repo.name,
+                        dateStr,
+                        stats,
+                        contributorDetails
+                    );
                 }
 
                 console.log(`[GraphQL] ${repo.name}: ✅ Stored ${statsMap.size} days of data.`);
@@ -3493,7 +3236,11 @@ app.get('/api/v1/contributors/:username', async (req, res) => {
         // 获取活跃仓库
         const reposResult = await pool.query(
             `SELECT r.name, r.id,
-                    SUM(cra.prs_opened + cra.prs_closed + cra.issues_opened + cra.issues_closed) as total_activities
+                    SUM(COALESCE(cra.prs_opened, 0)
+                      + COALESCE(cra.prs_closed, 0)
+                      + COALESCE(cra.issues_opened, 0)
+                      + COALESCE(cra.issues_closed, 0)
+                      + COALESCE(cra.commits_count, 0)) as total_activities
              FROM contributor_repo_activities cra
              JOIN repositories r ON cra.repo_id = r.id
              WHERE cra.contributor_id = $1 AND cra.snapshot_date >= $2
@@ -3540,13 +3287,6 @@ app.listen(PORT, '0.0.0.0', async () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
 
     await redisConnectionPromise;
-
-    // Ensure repo storage path exists
-    try {
-        await fs.mkdir(REPO_STORAGE_PATH, { recursive: true });
-    } catch (e) {
-        console.error('Error creating repo storage path:', e.message);
-    }
 
     try {
         await synchronizeRepositoryMetadata();

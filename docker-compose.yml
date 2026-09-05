@@ -59,8 +59,6 @@ services:
       ENABLE_STARTUP_CACHE_FLUSH: ${ENABLE_STARTUP_CACHE_FLUSH:-false}
       ENABLE_STARTUP_BACKFILL: ${ENABLE_STARTUP_BACKFILL:-false}
       STARTUP_BACKFILL_DAYS: ${STARTUP_BACKFILL_DAYS:-30}
-    volumes:
-      - repos_data:/app/repos
     ports:
       - "${BACKEND_PORT:-3000}:3000"
 
@@ -78,4 +76,3 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  repos_data:
