@@ -201,7 +201,7 @@ const Dashboard = () => {
                 <div className="flex items-center gap-4">
                     <img
                         src="/hust-open-atom-club-logo.svg"
-                        alt="华科开放原子开源俱乐部 Logo"
+                        alt=""
                         className="w-16 h-16 shrink-0 rounded-full shadow-lg shadow-blue-950/40"
                     />
                     <div>
