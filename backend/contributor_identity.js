@@ -1,6 +1,35 @@
 async function mergeContributorIdentities(client, sourceContributorId, targetContributorId) {
     if (sourceContributorId === targetContributorId) return;
 
+    // Older rows may contain commit metrics only at the organization/day level.
+    // Capture values with no repository attribution before deleting the source
+    // identity so the repository-derived rebuild cannot erase them.
+    const legacyDailyResult = await client.query(
+        `SELECT cda.org_id,
+                cda.snapshot_date,
+                COALESCE(SUM(cda.commits_count), 0)::integer AS commits_count,
+                COALESCE(SUM(cda.lines_added), 0)::integer AS lines_added,
+                COALESCE(SUM(cda.lines_deleted), 0)::integer AS lines_deleted
+         FROM contributor_daily_activities cda
+         WHERE cda.contributor_id = ANY($1::int[])
+           AND (COALESCE(cda.commits_count, 0) <> 0
+             OR COALESCE(cda.lines_added, 0) <> 0
+             OR COALESCE(cda.lines_deleted, 0) <> 0)
+           AND NOT EXISTS (
+               SELECT 1
+               FROM contributor_repo_activities activity
+               JOIN repositories repo ON repo.id = activity.repo_id
+               WHERE activity.contributor_id = cda.contributor_id
+                 AND activity.snapshot_date = cda.snapshot_date
+                 AND repo.org_id = cda.org_id
+                 AND (activity.commits_count <> 0
+                   OR activity.lines_added <> 0
+                   OR activity.lines_deleted <> 0)
+           )
+         GROUP BY cda.org_id, cda.snapshot_date`,
+        [[sourceContributorId, targetContributorId]]
+    );
+
     await client.query(
         `INSERT INTO contributor_repo_activities
          (contributor_id, repo_id, snapshot_date, prs_opened, prs_closed,
@@ -117,6 +146,50 @@ async function mergeContributorIdentities(client, sourceContributorId, targetCon
          GROUP BY r.org_id, cra.snapshot_date`,
         [targetContributorId]
     );
+
+    if (legacyDailyResult.rows.length > 0) {
+        const legacyDailyMetrics = legacyDailyResult.rows.map((row) => {
+            const snapshotDate = row.snapshot_date instanceof Date
+                ? [
+                    row.snapshot_date.getFullYear(),
+                    String(row.snapshot_date.getMonth() + 1).padStart(2, '0'),
+                    String(row.snapshot_date.getDate()).padStart(2, '0'),
+                ].join('-')
+                : String(row.snapshot_date).slice(0, 10);
+
+            return {
+                org_id: row.org_id,
+                snapshot_date: snapshotDate,
+                commits_count: Number(row.commits_count) || 0,
+                lines_added: Number(row.lines_added) || 0,
+                lines_deleted: Number(row.lines_deleted) || 0,
+            };
+        });
+
+        await client.query(
+            `INSERT INTO contributor_daily_activities
+             (contributor_id, org_id, snapshot_date, prs_opened, prs_closed,
+              issues_opened, issues_closed, commits_count, lines_added,
+              lines_deleted, active_repos_count)
+             SELECT $1, legacy.org_id, legacy.snapshot_date, 0, 0, 0, 0,
+                    legacy.commits_count, legacy.lines_added, legacy.lines_deleted, 0
+             FROM jsonb_to_recordset($2::jsonb) AS legacy(
+                 org_id integer,
+                 snapshot_date date,
+                 commits_count integer,
+                 lines_added integer,
+                 lines_deleted integer
+             )
+             ON CONFLICT (contributor_id, org_id, snapshot_date) DO UPDATE
+             SET commits_count = COALESCE(contributor_daily_activities.commits_count, 0)
+                                     + EXCLUDED.commits_count,
+                 lines_added = COALESCE(contributor_daily_activities.lines_added, 0)
+                                   + EXCLUDED.lines_added,
+                 lines_deleted = COALESCE(contributor_daily_activities.lines_deleted, 0)
+                                     + EXCLUDED.lines_deleted`,
+            [targetContributorId, JSON.stringify(legacyDailyMetrics)]
+        );
+    }
 
     await client.query(
         `UPDATE contributors AS target

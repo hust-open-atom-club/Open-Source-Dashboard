@@ -13,7 +13,12 @@ function buildCommitStats(authorStats = {}, overrides = {}) {
     };
 }
 
-function createDatabaseDouble({ failOn, existingContributorId, nullIdOccupantId } = {}) {
+function createDatabaseDouble({
+    failOn,
+    existingContributorId,
+    nullIdOccupantId,
+    legacyDailyRows = [],
+} = {}) {
     const queries = [];
     let released = false;
 
@@ -30,6 +35,9 @@ function createDatabaseDouble({ failOn, existingContributorId, nullIdOccupantId 
             }
             if (text.startsWith('SELECT contributor_id')) {
                 return { rows: [{ contributor_id: 41 }] };
+            }
+            if (text.startsWith('SELECT cda.org_id')) {
+                return { rows: legacyDailyRows };
             }
             if (text.startsWith('INSERT INTO repo_snapshots')) {
                 return { rows: [{ id: 99 }], rowCount: 1 };
@@ -314,6 +322,13 @@ test('a null-ID username occupant is merged before an ID-backed identity is rena
     const database = createDatabaseDouble({
         existingContributorId: 73,
         nullIdOccupantId: 42,
+        legacyDailyRows: [{
+            org_id: 7,
+            snapshot_date: new Date(2025, 2, 4),
+            commits_count: '3',
+            lines_added: '10',
+            lines_deleted: '2',
+        }],
     });
 
     await persistRepoCommitStats({
@@ -337,6 +352,14 @@ test('a null-ID username occupant is merged before an ID-backed identity is rena
     );
     assert.deepEqual(repoFactsMerge.params, [73, 42]);
     assert.match(repoFactsMerge.sql, /COALESCE\(contributor_repo_activities\.commits_count, 0\)/);
+
+    const legacyDailyCapture = database.queries.find((query) =>
+        query.sql.startsWith('SELECT cda.org_id')
+    );
+    assert.deepEqual(legacyDailyCapture.params, [[42, 73]]);
+    assert.match(legacyDailyCapture.sql, /NOT EXISTS/);
+    assert.match(legacyDailyCapture.sql, /activity\.commits_count <> 0/);
+    assert.ok(database.queries.indexOf(legacyDailyCapture) < database.queries.indexOf(repoFactsMerge));
 
     const historicalRepoCounts = database.queries.find((query) =>
         query.sql.startsWith('UPDATE repo_snapshots AS snapshot')
@@ -371,6 +394,23 @@ test('a null-ID username occupant is merged before an ID-backed identity is rena
     );
     assert.deepEqual(allDailyRebuild.params, [73]);
     assert.match(allDailyRebuild.sql, /COUNT\(DISTINCT cra\.repo_id\)/);
+
+    const legacyDailyRestore = database.queries.find((query) =>
+        query.sql.startsWith('INSERT INTO contributor_daily_activities') &&
+        query.sql.includes('jsonb_to_recordset')
+    );
+    assert.deepEqual(legacyDailyRestore.params, [73, JSON.stringify([{
+        org_id: 7,
+        snapshot_date: '2025-03-04',
+        commits_count: 3,
+        lines_added: 10,
+        lines_deleted: 2,
+    }])]);
+    assert.match(
+        legacyDailyRestore.sql,
+        /commits_count = COALESCE\(contributor_daily_activities\.commits_count, 0\)/
+    );
+    assert.ok(database.queries.indexOf(allDailyRebuild) < database.queries.indexOf(legacyDailyRestore));
 
     const sourceDelete = database.queries.find((query) =>
         query.sql === 'DELETE FROM contributors WHERE id = $1'
