@@ -243,7 +243,7 @@ const Dashboard = () => {
             <section className="relative overflow-hidden rounded-2xl border border-blue-500/20 bg-gradient-to-br from-blue-950/80 via-gray-800 to-purple-950/60 p-6 md:p-8 mb-8 shadow-2xl shadow-blue-950/20">
                 <div className="absolute -right-24 -top-24 h-64 w-64 rounded-full bg-blue-500/10 blur-3xl" aria-hidden="true"></div>
                 <div className="absolute -bottom-28 right-1/3 h-56 w-56 rounded-full bg-purple-500/10 blur-3xl" aria-hidden="true"></div>
-                <div className="relative grid gap-8 xl:grid-cols-[1.35fr_1fr] xl:items-center">
+                <div className="relative grid gap-8 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] xl:items-center">
                     <div>
                         <p className="mb-3 text-xs font-semibold uppercase tracking-[0.28em] text-blue-300">HUST Open Atom Club</p>
                         <h2 className="max-w-3xl text-2xl font-bold leading-tight text-white md:text-4xl">让每一次开源贡献，都被看见</h2>
@@ -274,16 +274,17 @@ const Dashboard = () => {
                         </div>
                     </div>
 
-                    <div className="rounded-xl border border-white/10 bg-gray-950/35 p-5 backdrop-blur-sm">
-                        <p className="text-sm font-semibold text-gray-200">看板范围</p>
-                        <div className="mt-4 grid grid-cols-3 gap-3">
+                    <div className="rounded-xl border border-white/10 bg-gray-950/35 p-5 backdrop-blur-sm md:p-7">
+                        <p className="text-base font-semibold text-gray-100">看板范围</p>
+                        <div className="mt-5 grid grid-cols-3 gap-3 md:gap-4">
                             <ScopeStat label="纳入统计" value={summary?.tracked_repositories} unit="个仓库" />
                             <ScopeStat label="组织仓库" value={summary?.organization_repositories} unit="个仓库" />
                             <ScopeStat label="技术小组" value={allSigs.length} unit="个 SIG" />
                         </div>
-                        <p className="mt-4 border-t border-white/10 pt-4 text-xs leading-5 text-gray-400">
+                        <p className="mt-5 border-t border-white/10 pt-5 text-sm leading-6 text-gray-400">
                             统计范围以 GitHub 仓库的 <code className="text-blue-300">osd_sig</code> 属性为准。
-                            标记为 <code className="text-gray-300">untracked</code> 的仓库不进入汇总；fork 仓库可按所属 SIG 纳入。
+                            标记为 <code className="text-gray-300">untracked</code> 的仓库以及纯 Fork 仓库不进入数据汇总。
+                            看板默认每 6 小时更新一次。
                         </p>
                     </div>
                 </div>
@@ -422,10 +423,12 @@ const Dashboard = () => {
 };
 
 const ScopeStat = ({ label, value, unit }) => (
-    <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-        <div className="text-xl font-bold text-white md:text-2xl">{value?.toLocaleString() ?? '—'}</div>
-        <div className="mt-1 text-xs text-gray-400">{label}</div>
-        <div className="text-[11px] text-gray-500">{unit}</div>
+    <div className="rounded-lg border border-white/10 bg-white/5 p-3 md:p-4">
+        <div className="text-xs font-medium text-gray-300 md:text-sm">{label}</div>
+        <div className="mt-2 flex items-baseline gap-1.5">
+            <span className="text-2xl font-bold text-white md:text-3xl">{value?.toLocaleString() ?? '—'}</span>
+            <span className="text-xs text-gray-500">{unit}</span>
+        </div>
     </div>
 );
 
