@@ -210,7 +210,10 @@ psql -d oss_dashboard -f db/contributors_schema.sql
 
 ```bash
 psql -d oss_dashboard -f db/migrations/001_github_custom_property_sigs.sql
+psql -d oss_dashboard -f db/migrations/002_repository_organization_membership.sql
 ```
+
+执行 `002` 后需启动后端或运行 `npm run sync-repository-sigs`，以 GitHub 当前仓库列表更新组织成员状态。
 
 如需启用可选物化视图：
 
@@ -345,6 +348,7 @@ npm run lint
 - **仓库归属**：以 GitHub 组织仓库的 `osd_sig` Custom Property 为唯一来源，不再维护仓库映射文件
 - **属性同步**：后端启动、定时采集和回填前都会完整读取并同步 `osd_sig`
 - **排除状态**：`osd_sig=untracked` 的仓库保留原始历史快照，但不参与后续采集和 SIG/组织聚合
+- **组织成员状态**：删除或转移出 GitHub 组织的仓库保留历史数据，但不再计入当前组织仓库数
 - **稳定身份**：数据库保存 GitHub `repository_id`，仓库重命名时沿用原记录和全部历史数据
 - **历史迁移**：仓库切换 SIG 或切换到/离开 `untracked` 时，会按当前归属重新聚合已有历史快照和贡献者汇总
 - **自动更新**：后端服务默认每 6 小时自动采集一次新数据

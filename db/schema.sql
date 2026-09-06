@@ -28,6 +28,7 @@ CREATE TABLE repositories (
     org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     sig_id INTEGER REFERENCES special_interest_groups(id) ON DELETE SET NULL, -- NULL means osd_sig=untracked
     github_id BIGINT UNIQUE, -- Stable GitHub repository identity, preserved across renames
+    is_in_organization BOOLEAN NOT NULL DEFAULT TRUE, -- False retains history for repositories no longer in the GitHub organization
     name VARCHAR(255) NOT NULL, -- 仓库名称，如 hust-mirrors
     description TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),

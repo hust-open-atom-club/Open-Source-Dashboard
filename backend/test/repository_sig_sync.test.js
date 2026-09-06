@@ -123,11 +123,13 @@ test('database synchronization preserves untracked rows and reaggregates changed
             if (compact.startsWith('SELECT r.id, r.github_id')) {
                 return {
                     rows: [
-                        { id: 10, github_id: null, name: 'tracked-old', sig_id: 2, sig_slug: 'linux-kernel' },
-                        { id: 11, github_id: null, name: 'removed-repo', sig_id: 3, sig_slug: 'r2' },
-                        { id: 12, github_id: null, name: 'already-untracked', sig_id: null, sig_slug: null },
+                        { id: 10, github_id: null, name: 'tracked-old', sig_id: 2, sig_slug: 'linux-kernel', is_in_organization: true },
+                        { id: 11, github_id: null, name: 'removed-repo', sig_id: 3, sig_slug: 'r2', is_in_organization: true },
+                        { id: 12, github_id: null, name: 'already-untracked', sig_id: null, sig_slug: null, is_in_organization: true },
+                        { id: 13, github_id: '304', name: 'removed-untracked', sig_id: null, sig_slug: null, is_in_organization: true },
+                        { id: 14, github_id: '305', name: 'historical-repo', sig_id: null, sig_slug: null, is_in_organization: false },
                     ],
-                    rowCount: 3,
+                    rowCount: 5,
                 };
             }
             if (compact.includes('INSERT INTO sig_snapshots')) {
@@ -160,10 +162,10 @@ test('database synchronization preserves untracked rows and reaggregates changed
     assert.equal(result.tracked, 2);
     assert.equal(result.untracked, 1);
     assert.equal(result.created, 1);
-    assert.equal(result.disabled, 1);
+    assert.equal(result.disabled, 2);
     assert.deepEqual(
         result.changes.map((change) => change.repository).sort(),
-        ['new-repo', 'removed-repo', 'tracked-old']
+        ['new-repo', 'removed-repo', 'removed-untracked', 'tracked-old']
     );
     assert.equal(result.reaggregation.sigSnapshots, 12);
     assert.equal(result.reaggregation.organizationSnapshots, 6);
@@ -177,6 +179,14 @@ test('database synchronization preserves untracked rows and reaggregates changed
         && query.sql.includes('NOT EXISTS')
     ));
     assert.ok(queries.some((query) => query.sql.includes('HAVING BOOL_OR')));
+    assert.ok(queries.some((query) =>
+        query.sql === 'UPDATE repositories SET sig_id = NULL, is_in_organization = FALSE WHERE id = $1'
+        && query.params[0] === 13
+    ));
+    assert.ok(!queries.some((query) =>
+        query.sql.includes('is_in_organization = FALSE')
+        && query.params[0] === 14
+    ));
     assert.ok(queries.some((query) => query.sql === 'COMMIT'));
     assert.ok(!queries.some((query) => query.sql === 'ROLLBACK'));
     assert.equal(queries.at(-1).sql, 'RELEASE');
@@ -235,6 +245,64 @@ test('database synchronization matches a renamed repository by GitHub ID', async
     assert.ok(!queries.some((query) => query.sql.includes('INSERT INTO repositories (org_id')));
 });
 
+test('database synchronization reactivates a repository that returns to the organization', async () => {
+    const queries = [];
+    const sigIds = new Map(Object.keys(SIG_DEFINITIONS).map((slug, index) => [slug, 100 + index]));
+    const client = {
+        async query(sql, params = []) {
+            queries.push({ sql, params });
+            const compact = sql.replace(/\s+/g, ' ').trim();
+            if (compact === 'BEGIN' || compact === 'COMMIT' || compact === 'ROLLBACK') {
+                return { rows: [], rowCount: 0 };
+            }
+            if (compact.startsWith('INSERT INTO organizations')) {
+                return { rows: [{ id: 1 }], rowCount: 1 };
+            }
+            if (compact.startsWith('INSERT INTO special_interest_groups')) {
+                return { rows: [{ id: sigIds.get(params[1]) }], rowCount: 1 };
+            }
+            if (compact.startsWith('SELECT r.id, r.github_id')) {
+                return {
+                    rows: [{
+                        id: 10,
+                        github_id: '98765',
+                        name: 'returning-repo',
+                        sig_id: null,
+                        sig_slug: null,
+                        is_in_organization: false,
+                    }],
+                    rowCount: 1,
+                };
+            }
+            return { rows: [], rowCount: 1 };
+        },
+        release() {},
+    };
+
+    const result = await applyRepositorySigAssignments({
+        pool: { async connect() { return client; } },
+        assignments: [{
+            repositoryId: '98765',
+            repositoryName: 'returning-repo',
+            propertyValue: 'untracked',
+            sigSlug: null,
+        }],
+    });
+
+    assert.equal(result.created, 0);
+    assert.equal(result.disabled, 0);
+    assert.deepEqual(result.changes, [{
+        repository: 'returning-repo',
+        from: null,
+        to: null,
+        isInOrganization: true,
+    }]);
+    assert.ok(queries.some((query) =>
+        query.sql.includes('is_in_organization = TRUE')
+        && query.params[3] === 10
+    ));
+});
+
 test('database synchronization preserves an old identity when its repository name is reused', async () => {
     const queries = [];
     const sigIds = new Map(Object.keys(SIG_DEFINITIONS).map((slug, index) => [slug, 100 + index]));
@@ -285,7 +353,7 @@ test('database synchronization preserves an old identity when its repository nam
         && query.params[3] === 'reused-name'
     ));
     assert.ok(queries.some((query) =>
-        query.sql === 'UPDATE repositories SET sig_id = NULL WHERE id = $1'
+        query.sql === 'UPDATE repositories SET sig_id = NULL, is_in_organization = FALSE WHERE id = $1'
         && query.params[0] === 10
     ));
     assert.ok(queries.some((query) => query.sql === 'COMMIT'));

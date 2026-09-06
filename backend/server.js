@@ -1410,8 +1410,10 @@ app.get('/api/v1/organization/summary', async (req, res) => {
                 COALESCE(SUM(new_commits), 0) as new_commits,
                 COALESCE(SUM(lines_added), 0) as lines_added,
                 COALESCE(SUM(lines_deleted), 0) as lines_deleted,
-                (SELECT COUNT(*) FROM repositories WHERE org_id = $1) as organization_repositories,
-                (SELECT COUNT(*) FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL) as tracked_repositories,
+                (SELECT COUNT(*) FROM repositories
+                 WHERE org_id = $1 AND is_in_organization = TRUE) as organization_repositories,
+                (SELECT COUNT(*) FROM repositories
+                 WHERE org_id = $1 AND is_in_organization = TRUE AND sig_id IS NOT NULL) as tracked_repositories,
                 -- 为了调试和验证，可以返回统计了多少天的数据
                 COUNT(*) as days_counted 
              FROM activity_snapshots
