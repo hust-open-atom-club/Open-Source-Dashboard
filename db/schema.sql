@@ -23,6 +23,10 @@ CREATE TABLE special_interest_groups (
 
 -- Table: repositories
 -- 重点仓库表
+-- owner_login: 仓库实际所属的 GitHub 账号/组织；对上游仓库（如 rustsbi org）
+-- 与仪表盘组织（hust-open-atom-club）不同。
+-- track_all_branches: 为 TRUE 时 commit 统计覆盖所有分支（按 commit oid 去重），
+-- 而非仅默认分支。
 CREATE TABLE repositories (
     id SERIAL PRIMARY KEY,
     org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -30,9 +34,11 @@ CREATE TABLE repositories (
     github_id BIGINT UNIQUE, -- Stable GitHub repository identity, preserved across renames
     is_in_organization BOOLEAN NOT NULL DEFAULT TRUE, -- False retains history for repositories no longer in the GitHub organization
     name VARCHAR(255) NOT NULL, -- 仓库名称，如 hust-mirrors
+    owner_login VARCHAR(255) NOT NULL DEFAULT 'hust-open-atom-club', -- GitHub owner（组织或用户），上游仓库时与 org 不同
+    track_all_branches BOOLEAN NOT NULL DEFAULT FALSE, -- TRUE 时 commit 统计聚合所有分支并按 oid 去重
     description TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (org_id, name)
+    CONSTRAINT repositories_org_owner_name_unique UNIQUE (org_id, owner_login, name)
 );
 
 -- Table: activity_snapshots
@@ -97,3 +103,16 @@ CREATE TABLE repo_snapshots (
 CREATE INDEX idx_activity_snapshots_org_date ON activity_snapshots (org_id, snapshot_date);
 CREATE INDEX idx_sig_snapshots_sig_date ON sig_snapshots (sig_id, snapshot_date);
 CREATE INDEX idx_repo_snapshots_repo_date ON repo_snapshots (repo_id, snapshot_date);
+
+-- Table: upstream_org_trackings
+-- 上游组织跟踪配置：枚举指定 GitHub 组织下的所有仓库并归入指定 SIG。
+-- main_repo_name 指定的仓库会启用全分支 commit 统计（track_all_branches）。
+CREATE TABLE upstream_org_trackings (
+    owner_login VARCHAR(255) PRIMARY KEY, -- 上游组织登录名，如 rustsbi
+    sig_slug VARCHAR(255) NOT NULL, -- 归入的 SIG（osd_sig 取值，如 r2）
+    main_repo_name VARCHAR(255), -- 主仓库名；该仓库统计所有分支
+    include_archived BOOLEAN NOT NULL DEFAULT TRUE,
+    include_forks BOOLEAN NOT NULL DEFAULT TRUE,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);

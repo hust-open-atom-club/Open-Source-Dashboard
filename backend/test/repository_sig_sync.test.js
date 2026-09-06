@@ -387,3 +387,67 @@ test('database synchronization rolls back when a write fails', async () => {
     assert.ok(commands.includes('ROLLBACK'));
     assert.equal(commands.at(-1), 'RELEASE');
 });
+
+test('property synchronization leaves upstream-owned rows untouched', async () => {
+    const queries = [];
+    const sigIds = new Map(Object.keys(SIG_DEFINITIONS).map((slug, index) => [slug, 100 + index]));
+    const client = {
+        async query(sql, params = []) {
+            queries.push({ sql, params });
+            const compact = sql.replace(/\s+/g, ' ').trim();
+
+            if (compact === 'BEGIN' || compact === 'COMMIT' || compact === 'ROLLBACK') {
+                return { rows: [], rowCount: 0 };
+            }
+            if (compact.startsWith('INSERT INTO organizations')) {
+                return { rows: [{ id: 1 }], rowCount: 1 };
+            }
+            if (compact.startsWith('INSERT INTO special_interest_groups')) {
+                return { rows: [{ id: sigIds.get(params[1]) }], rowCount: 1 };
+            }
+            if (compact.startsWith('SELECT r.id, r.github_id')) {
+                return {
+                    rows: [
+                        // A club row sharing its name with an upstream row must
+                        // not trip the duplicate-name check: uniqueness is now
+                        // scoped by owner_login.
+                        { id: 10, github_id: null, name: 'example', sig_id: null, sig_slug: null, is_in_organization: true, owner_login: 'hust-open-atom-club' },
+                        { id: 15, github_id: '305', name: 'Example', sig_id: sigIds.get('r2'), sig_slug: 'r2', is_in_organization: false, owner_login: 'rustsbi' },
+                    ],
+                    rowCount: 2,
+                };
+            }
+            return { rows: [], rowCount: 1 };
+        },
+        release() {
+            queries.push({ sql: 'RELEASE', params: [] });
+        },
+    };
+    const pool = { async connect() { return client; } };
+
+    const result = await applyRepositorySigAssignments({
+        pool,
+        assignments: [
+            { repositoryId: '301', repositoryName: 'example', propertyValue: 'untracked', sigSlug: null },
+            { repositoryId: '302', repositoryName: 'new-repo', propertyValue: 'hctt', sigSlug: 'hctt' },
+        ],
+    });
+
+    assert.equal(result.disabled, 0);
+    assert.deepEqual(result.changes.map((change) => change.repository), ['new-repo']);
+
+    // The upstream row (id 15) is absent from the Custom Property listing but
+    // must never be disabled by the club-org synchronization.
+    assert.ok(!queries.some((query) =>
+        query.sql === 'UPDATE repositories SET sig_id = NULL, is_in_organization = FALSE WHERE id = $1'
+        && query.params[0] === 15
+    ));
+
+    // New club rows are stored with the dashboard org as their owner.
+    const insert = queries.find((query) => query.sql.includes('INSERT INTO repositories'));
+    assert.ok(insert);
+    assert.equal(insert.params.at(-1), 'hust-open-atom-club');
+
+    assert.ok(queries.some((query) => query.sql === 'COMMIT'));
+    assert.equal(queries.at(-1).sql, 'RELEASE');
+});

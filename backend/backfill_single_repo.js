@@ -4,11 +4,13 @@ const { Pool } = require('pg');
 const axios = require('axios');
 const {
     fetchCommitHistoryViaGraphQL,
+    fetchAllBranchCommitHistoryViaGraphQL,
 } = require('./github_commit_history');
 const {
     DEFAULT_PROPERTY_NAME,
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
+const { syncUpstreamOrgRepositories } = require('./upstream_repository_sync');
 const { persistRepoCommitStats } = require('./commit_author_stats');
 const { collectAndPersistRepoApiStats } = require('./repo_api_ingestion');
 
@@ -164,7 +166,7 @@ async function storeRepoCommitStats(repoId, repoName, targetDate, commitStats) {
  * [PIPELINE 2] Fetches ONLY API-related stats (PRs, Issues) and stores them.
  * This process is completely independent of the commit-history process.
  */
-async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
+async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate, ownerLogin = ORG_NAME) {
     const targetDateStr = formatDate(targetDate);
     console.log(`[API Pipeline] Starting to fetch API stats for: ${repoName}`);
 
@@ -173,6 +175,7 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
             githubRest,
             pool,
             orgName: ORG_NAME,
+            ownerLogin,
             repoId,
             repoName,
             snapshotDate: targetDateStr,
@@ -187,8 +190,8 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
 }
 
 // --- 主回填逻辑 ---
-async function backfillSingleRepository(repoName, days = 30) {
-    console.log(`--- [START] Backfill for single repository: [${repoName}] for the last ${days} days ---`);
+async function backfillSingleRepository(repoName, ownerLogin = ORG_NAME, days = 30) {
+    console.log(`--- [START] Backfill for repository: [${ownerLogin}/${repoName}] for the last ${days} days ---`);
 
     await syncRepositorySigsFromGitHub({
         pool,
@@ -196,20 +199,26 @@ async function backfillSingleRepository(repoName, days = 30) {
         orgName: ORG_NAME,
         propertyName: process.env.GITHUB_SIG_PROPERTY || DEFAULT_PROPERTY_NAME,
     });
+    await syncUpstreamOrgRepositories({
+        pool,
+        githubToken: GITHUB_TOKEN,
+        orgName: ORG_NAME,
+    });
 
     // 1. 从数据库获取 repo_id
     const repoResult = await pool.query(
-        `SELECT r.id
+        `SELECT r.id, r.track_all_branches
          FROM repositories r
          JOIN organizations org ON org.id = r.org_id
-         WHERE org.name = $1 AND r.name = $2 AND r.sig_id IS NOT NULL`,
-        [ORG_NAME, repoName]
+         WHERE org.name = $1 AND r.name = $2 AND r.owner_login = $3 AND r.sig_id IS NOT NULL`,
+        [ORG_NAME, repoName, ownerLogin]
     );
     if (repoResult.rows.length === 0) {
-        throw new Error(`Repository "${repoName}" is missing or has osd_sig=untracked.`);
+        throw new Error(`Repository "${ownerLogin}/${repoName}" is missing or untracked. (Upstream repositories require their owner as the second argument.)`);
     }
     const repoId = repoResult.rows[0].id;
-    console.log(`Found repository in DB with ID: ${repoId}`);
+    const trackAllBranches = repoResult.rows[0].track_all_branches === true;
+    console.log(`Found repository in DB with ID: ${repoId}${trackAllBranches ? ' (all-branch commit tracking)' : ''}`);
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -220,7 +229,9 @@ async function backfillSingleRepository(repoName, days = 30) {
     endDate.setDate(today.getDate() - 1);
 
     console.log(`Fetching commit history through GraphQL for ${formatDate(startDate)} to ${formatDate(endDate)}...`);
-    const commitStatsMap = await fetchCommitHistoryViaGraphQL(repoName, startDate, endDate);
+    const commitStatsMap = trackAllBranches
+        ? await fetchAllBranchCommitHistoryViaGraphQL(repoName, startDate, endDate, undefined, ownerLogin)
+        : await fetchCommitHistoryViaGraphQL(repoName, startDate, endDate, undefined, ownerLogin);
 
     for (let i = days; i >= 1; i--) {
         const targetDate = new Date(today);
@@ -234,8 +245,7 @@ async function backfillSingleRepository(repoName, days = 30) {
         await storeRepoCommitStats(repoId, repoName, targetDate, commitStatsMap.get(targetDateStr));
 
         // 3. 采集并存储 API 数据
-        // (fetchAndStoreRepoApiStats 是您主程序中的函数)
-        await fetchAndStoreRepoApiStats(repoId, repoName, targetDate);
+        await fetchAndStoreRepoApiStats(repoId, repoName, targetDate, ownerLogin);
     }
 
     console.log(`\n--- [FINISH] Backfill for [${repoName}] complete! ---`);
@@ -244,14 +254,22 @@ async function backfillSingleRepository(repoName, days = 30) {
 }
 
 // --- 脚本入口 ---
+// 用法: node backfill_single_repo.js <repository-name> [owner] [days]
+// owner 缺省为 hust-open-atom-club；回填上游仓库时传入其 GitHub owner，
+// 例如: node backfill_single_repo.js rustsbi rustsbi
 const repoToBackfill = process.argv[2];
+const ownerArg = process.argv[3];
+const daysArg = process.argv[4];
 if (!repoToBackfill) {
     console.error('ERROR: Please provide a repository name as a command-line argument.');
-    console.error('Usage: node backfill_single_repo.js <repository-name>');
+    console.error('Usage: node backfill_single_repo.js <repository-name> [owner] [days]');
     process.exit(1);
 }
 
-backfillSingleRepository(repoToBackfill).catch(err => {
+const ownerForBackfill = ownerArg || ORG_NAME;
+const daysForBackfill = daysArg ? parseInt(daysArg, 10) : 30;
+
+backfillSingleRepository(repoToBackfill, ownerForBackfill, daysForBackfill).catch(err => {
     console.error('An error occurred during the backfill script:', err);
     pool.end();
 });

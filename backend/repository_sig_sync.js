@@ -402,20 +402,21 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
         }
 
         const existingResult = await client.query(
-            `SELECT r.id, r.github_id, r.name, r.sig_id, r.is_in_organization, sig.slug AS sig_slug
+            `SELECT r.id, r.github_id, r.name, r.sig_id, r.is_in_organization, r.owner_login, sig.slug AS sig_slug
              FROM repositories r
              LEFT JOIN special_interest_groups sig ON sig.id = r.sig_id
              WHERE r.org_id = $1`,
             [orgId]
         );
+
+        // Custom Property assignments only govern repositories owned by the
+        // dashboard organization; upstream rows (owner_login != orgName) are
+        // managed by upstream_repository_sync and must not be disabled here.
+        const isClubOwned = (repository) => (repository.owner_login || orgName) === orgName;
+
         const existingByName = new Map();
         const existingByGithubId = new Map();
         for (const repository of existingResult.rows) {
-            const normalizedName = repository.name.toLowerCase();
-            if (existingByName.has(normalizedName)) {
-                throw new Error(`Database contains duplicate repository names ignoring case: ${repository.name}`);
-            }
-            existingByName.set(normalizedName, repository);
             if (repository.github_id !== null) {
                 const githubId = String(repository.github_id);
                 if (existingByGithubId.has(githubId)) {
@@ -423,6 +424,14 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
                 }
                 existingByGithubId.set(githubId, repository);
             }
+            if (!isClubOwned(repository)) {
+                continue;
+            }
+            const normalizedName = repository.name.toLowerCase();
+            if (existingByName.has(normalizedName)) {
+                throw new Error(`Database contains duplicate repository names ignoring case: ${repository.name}`);
+            }
+            existingByName.set(normalizedName, repository);
         }
 
         const affectedSigIds = new Set();
@@ -486,9 +495,9 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
 
             if (!existing) {
                 await client.query(
-                    `INSERT INTO repositories (org_id, sig_id, github_id, name, is_in_organization)
-                     VALUES ($1, $2, $3, $4, TRUE)`,
-                    [orgId, targetSigId, assignment.repositoryId, assignment.repositoryName]
+                    `INSERT INTO repositories (org_id, sig_id, github_id, name, owner_login, is_in_organization)
+                     VALUES ($1, $2, $3, $4, $5, TRUE)`,
+                    [orgId, targetSigId, assignment.repositoryId, assignment.repositoryName, orgName]
                 );
                 if (targetSigId !== null) {
                     affectedSigIds.add(targetSigId);
@@ -533,7 +542,9 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
         }
 
         for (const repository of existingResult.rows) {
-            if (matchedRepositoryIds.has(repository.id) || repository.is_in_organization === false) {
+            if (matchedRepositoryIds.has(repository.id)
+                || repository.is_in_organization === false
+                || !isClubOwned(repository)) {
                 continue;
             }
 

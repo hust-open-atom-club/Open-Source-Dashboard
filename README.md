@@ -57,7 +57,7 @@
 | 调度 | node-cron |
 | 前端 | React + Vite |
 | 可视化 | ECharts |
-| Commit 统计 | GitHub GraphQL 默认分支历史 |
+| Commit 统计 | GitHub GraphQL 默认分支历史；主仓库可扩展为全分支（按 commit oid 去重） |
 
 ## 目录结构
 
@@ -360,6 +360,14 @@ npm run lint
 - **重聚合**：使用 `backend/run_reaggregation.js`
 
 Commit 数量、增删行和作者统计均来自 GitHub GraphQL 的默认分支历史。历史回填按仓库分页获取指定日期范围，再在本地按日期归档；后端不会 clone 或持久化组织仓库。
+
+**上游组织与全分支跟踪**：
+
+- 仪表盘组织（`hust-open-atom-club`）之外的仓库无法携带 `osd_sig` 属性，通过 `upstream_org_trackings` 表配置跟踪：枚举指定 GitHub 组织（如 `rustsbi`）下的**全部仓库**并归入指定 SIG（R² SIG），在每日同步任务中与 `osd_sig` 同步一起执行。
+- 配置了 `main_repo_name` 的仓库（如 `rustsbi/rustsbi`）会启用 `track_all_branches`：commit 统计覆盖**所有存活分支**，同一 commit（相同 oid）在多个分支上只计一次，merge commit 仍按「计 commit、不计行数」的口径处理。
+- 上游仓库在 `repositories` 表中以 `owner_login` 区分；同名仓库（如 club 的 fork 与上游同名仓库）可共存，唯一约束为 `(org_id, owner_login, name)`。
+- 跟踪上游后，需将 club 内同名 fork（如 `hust-open-atom-club/rustsbi`）的 `osd_sig` 设为 `untracked`，避免双计；仓库行保留、历史不丢。
+- 回填上游仓库：`node backfill_single_repo.js <repo-name> <owner>`，例如 `node backfill_single_repo.js rustsbi rustsbi`。
 
 注意：
 
