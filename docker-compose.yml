@@ -34,6 +34,21 @@ services:
       retries: 10
       start_period: 5s
 
+  migrate:
+    image: postgres:16
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGDATABASE: ${POSTGRES_DB:-oss_dashboard}
+    volumes:
+      - ./db:/db-source:ro
+    command: ["/bin/sh", "/db-source/run-migrations.sh"]
+
   backend:
     build:
       context: .
@@ -44,6 +59,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       NODE_ENV: production
       TZ: ${TZ:-Asia/Shanghai}

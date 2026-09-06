@@ -206,7 +206,7 @@ psql -d oss_dashboard -f db/seed.sql
 psql -d oss_dashboard -f db/contributors_schema.sql
 ```
 
-从旧版本升级已有数据库时，先执行 Custom Property 迁移：
+不使用 Docker Compose、从旧版本升级已有数据库时，按顺序执行迁移：
 
 ```bash
 psql -d oss_dashboard -f db/migrations/001_github_custom_property_sigs.sql
@@ -268,6 +268,7 @@ npm run dev
 ```bash
 docker compose up -d --build
 docker compose ps
+docker compose logs migrate
 docker compose logs backend
 docker compose logs frontend
 docker compose logs postgres
@@ -277,6 +278,8 @@ docker compose exec backend node run_graphql_backfill.js 30 --flush-cache
 docker compose down
 docker compose down -v --rmi local
 ```
+
+Compose 会在 backend 启动前运行一次性 `migrate` 服务；迁移失败时 backend 不会启动。该服务会按文件名顺序执行 `db/migrations/*.sql`，已有迁移可安全重复执行。
 
 ### 后端
 
