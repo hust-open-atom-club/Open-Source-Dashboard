@@ -37,9 +37,9 @@ const DayDetailModal = ({ date, chartType = 'prs', onClose }) => {
     }, [onClose]);
 
     const tabs = [
-        { id: 'prs', label: 'Pull Requests', icon: '🔀', color: 'text-purple-400' },
-        { id: 'issues', label: 'Issues', icon: '📋', color: 'text-green-400' },
-        { id: 'commits', label: 'Commits', icon: '💻', color: 'text-blue-400' },
+        { id: 'prs', label: 'PR', icon: '🔀', color: 'text-purple-400' },
+        { id: 'issues', label: 'Issue', icon: '📋', color: 'text-green-400' },
+        { id: 'commits', label: 'Commit', icon: '💻', color: 'text-blue-400' },
         { id: 'contributors', label: '贡献者', icon: '👥', color: 'text-orange-400' }
     ];
 
@@ -73,15 +73,15 @@ const DayDetailModal = ({ date, chartType = 'prs', onClose }) => {
                     <div className="grid grid-cols-4 gap-4 p-6 bg-gray-800/50">
                         <div className="text-center">
                             <div className="text-2xl font-bold text-purple-400">{data.summary.new_prs}</div>
-                            <div className="text-xs text-gray-400">New PRs</div>
+                            <div className="text-xs text-gray-400">新建 PR</div>
                         </div>
                         <div className="text-center">
                             <div className="text-2xl font-bold text-green-400">{data.summary.new_issues}</div>
-                            <div className="text-xs text-gray-400">New Issues</div>
+                            <div className="text-xs text-gray-400">新建 Issue</div>
                         </div>
                         <div className="text-center">
                             <div className="text-2xl font-bold text-blue-400">{data.summary.new_commits}</div>
-                            <div className="text-xs text-gray-400">Commits</div>
+                            <div className="text-xs text-gray-400">Commit</div>
                         </div>
                         <div className="text-center">
                             <div className="text-2xl font-bold text-orange-400">{data.summary.active_contributors}</div>

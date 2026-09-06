@@ -402,7 +402,7 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
         }
 
         const existingResult = await client.query(
-            `SELECT r.id, r.github_id, r.name, r.sig_id, sig.slug AS sig_slug
+            `SELECT r.id, r.github_id, r.name, r.sig_id, r.is_in_organization, sig.slug AS sig_slug
              FROM repositories r
              LEFT JOIN special_interest_groups sig ON sig.id = r.sig_id
              WHERE r.org_id = $1`,
@@ -486,8 +486,8 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
 
             if (!existing) {
                 await client.query(
-                    `INSERT INTO repositories (org_id, sig_id, github_id, name)
-                     VALUES ($1, $2, $3, $4)`,
+                    `INSERT INTO repositories (org_id, sig_id, github_id, name, is_in_organization)
+                     VALUES ($1, $2, $3, $4, TRUE)`,
                     [orgId, targetSigId, assignment.repositoryId, assignment.repositoryName]
                 );
                 if (targetSigId !== null) {
@@ -501,10 +501,11 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
             const mappingChanged = existing.sig_slug !== assignment.sigSlug;
             const nameChanged = existing.name !== assignment.repositoryName;
             const githubIdChanged = existing.github_id === null;
-            if (mappingChanged || nameChanged || githubIdChanged) {
+            const membershipChanged = existing.is_in_organization === false;
+            if (mappingChanged || nameChanged || githubIdChanged || membershipChanged) {
                 await client.query(
                     `UPDATE repositories
-                     SET name = $1, sig_id = $2, github_id = $3
+                     SET name = $1, sig_id = $2, github_id = $3, is_in_organization = TRUE
                      WHERE id = $4`,
                     [assignment.repositoryName, targetSigId, assignment.repositoryId, existing.id]
                 );
@@ -520,24 +521,37 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
                     affectedSigIds.add(targetSigId);
                 }
             }
-            if (mappingChanged || nameChanged) {
+            if (mappingChanged || nameChanged || membershipChanged) {
                 changes.push({
                     repository: assignment.repositoryName,
                     ...(nameChanged ? { previousRepository: existing.name } : {}),
                     from: existing.sig_slug,
                     to: assignment.sigSlug,
+                    ...(membershipChanged ? { isInOrganization: true } : {}),
                 });
             }
         }
 
         for (const repository of existingResult.rows) {
-            if (!matchedRepositoryIds.has(repository.id) && repository.sig_id !== null) {
+            if (matchedRepositoryIds.has(repository.id) || repository.is_in_organization === false) {
+                continue;
+            }
+
+            if (repository.sig_id !== null) {
                 affectedSigIds.add(repository.sig_id);
-                await client.query('UPDATE repositories SET sig_id = NULL WHERE id = $1', [repository.id]);
-                changes.push({ repository: repository.name, from: repository.sig_slug, to: null });
-                disabled += 1;
                 trackingChanged = true;
             }
+            await client.query(
+                'UPDATE repositories SET sig_id = NULL, is_in_organization = FALSE WHERE id = $1',
+                [repository.id]
+            );
+            changes.push({
+                repository: repository.name,
+                from: repository.sig_slug,
+                to: null,
+                isInOrganization: false,
+            });
+            disabled += 1;
         }
 
         const reaggregation = await reaggregateAffectedHistoricalSnapshots(

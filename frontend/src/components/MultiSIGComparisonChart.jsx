@@ -13,9 +13,9 @@ const MultiSIGComparisonChart = ({ sigs, selectedSigIds, onSigSelectionChange, m
     }, [sigs, selectedSigIds]);
 
     const metricLabels = {
-        new_prs: 'PRs',
-        new_issues: 'Issues',
-        new_commits: 'Commits',
+        new_prs: 'PR',
+        new_issues: 'Issue',
+        new_commits: 'Commit',
         lines_added: '新增代码行'
     };
 
@@ -137,4 +137,3 @@ const MultiSIGComparisonChart = ({ sigs, selectedSigIds, onSigSelectionChange, m
 };
 
 export default MultiSIGComparisonChart;
-

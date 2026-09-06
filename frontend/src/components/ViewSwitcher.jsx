@@ -17,11 +17,11 @@ const ViewSwitcher = ({ view, onViewChange, range, onRangeChange }) => {
     ];
 
     return (
-        <div className="flex gap-4 items-center">
+        <div className="flex w-full min-w-0 flex-col gap-3 lg:w-auto lg:flex-row lg:items-center">
             {/* Granularity Switcher */}
-            <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-400">粒度:</span>
-                <div className="bg-gray-800 rounded-lg p-1 border border-gray-700 flex">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="text-sm text-gray-400">粒度：</span>
+                <div className="flex flex-wrap rounded-lg border border-gray-700 bg-gray-800 p-1">
                     {viewOptions.map(option => (
                         <button
                             key={option.value}
@@ -38,9 +38,9 @@ const ViewSwitcher = ({ view, onViewChange, range, onRangeChange }) => {
             </div>
 
             {/* Time Range Switcher */}
-            <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-400">时间范围:</span>
-                <div className="bg-gray-800 rounded-lg p-1 border border-gray-700 flex">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="text-sm text-gray-400">时间范围：</span>
+                <div className="flex flex-wrap rounded-lg border border-gray-700 bg-gray-800 p-1">
                     {rangeOptions.map(option => (
                         <button
                             key={option.value}
@@ -60,4 +60,3 @@ const ViewSwitcher = ({ view, onViewChange, range, onRangeChange }) => {
 };
 
 export default ViewSwitcher;
-

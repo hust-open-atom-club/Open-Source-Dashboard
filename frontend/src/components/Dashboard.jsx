@@ -42,9 +42,9 @@ const Dashboard = () => {
     // SIG chart metric
     const [sigMetric, setSigMetric] = useState('prs');
     const sigMetrics = [
-        { key: 'prs', label: 'PRs', name: 'Pull Requests', color: '#8b5cf6' },
-        { key: 'issues', label: 'Issues', name: '议题', color: '#f59e0b' },
-        { key: 'commits', label: 'Commits', name: '提交', color: '#10b981' }
+        { key: 'prs', label: 'PR', name: 'PR', color: '#8b5cf6' },
+        { key: 'issues', label: 'Issue', name: 'Issue', color: '#f59e0b' },
+        { key: 'commits', label: 'Commit', name: 'Commit', color: '#10b981' }
     ];
 
     useEffect(() => {
@@ -173,7 +173,7 @@ const Dashboard = () => {
     }
 
     return (
-        <div className="min-h-screen bg-gray-900 text-white p-8 font-sans">
+        <div className="min-h-screen bg-gray-900 text-white p-4 font-sans md:p-8">
             {/* Toast Container */}
             <ToastContainer toasts={toasts} removeToast={removeToast} />
 
@@ -211,7 +211,7 @@ const Dashboard = () => {
                         <p className="text-lg text-gray-400 mt-1">开源贡献数据看板</p>
                     </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-4">
+                <div className="flex w-full flex-wrap items-center gap-4 xl:w-auto xl:justify-end">
                     <ViewSwitcher
                         view={granularity}
                         onViewChange={setGranularity}
@@ -239,11 +239,61 @@ const Dashboard = () => {
                 </div>
             </div>
 
+            {/* Club introduction */}
+            <section className="relative overflow-hidden rounded-2xl border border-blue-500/20 bg-gradient-to-br from-blue-950/80 via-gray-800 to-purple-950/60 p-6 md:p-8 mb-8 shadow-2xl shadow-blue-950/20">
+                <div className="absolute -right-24 -top-24 h-64 w-64 rounded-full bg-blue-500/10 blur-3xl" aria-hidden="true"></div>
+                <div className="absolute -bottom-28 right-1/3 h-56 w-56 rounded-full bg-purple-500/10 blur-3xl" aria-hidden="true"></div>
+                <div className="relative grid gap-8 xl:grid-cols-[1.35fr_1fr] xl:items-center">
+                    <div>
+                        <p className="mb-3 text-xs font-semibold uppercase tracking-[0.28em] text-blue-300">HUST Open Atom Club</p>
+                        <h2 className="max-w-3xl text-2xl font-bold leading-tight text-white md:text-4xl">让每一次开源贡献，都被看见</h2>
+                        <p className="mt-4 max-w-2xl leading-7 text-gray-300">
+                            我们是由华中科技大学师生与开源爱好者共同建设的开源社区。
+                            看板聚合俱乐部各 SIG 的公开协作数据，记录我们一起写下的 Commit、PR 和 Issue。
+                        </p>
+                        <div className="mt-5 flex flex-wrap gap-2" aria-label="俱乐部价值观">
+                            {['开放', '共享', '协同', '贡献'].map(value => (
+                                <span key={value} className="rounded-full border border-blue-400/25 bg-blue-400/10 px-3 py-1 text-sm text-blue-100">{value}</span>
+                            ))}
+                        </div>
+                        <div className="mt-6 flex flex-wrap gap-3">
+                            <a
+                                href="https://github.com/hust-open-atom-club"
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-500"
+                            >
+                                访问 GitHub 组织 <span className="ml-2" aria-hidden="true">↗</span>
+                            </a>
+                            <a
+                                href="#contribution-overview"
+                                className="inline-flex items-center rounded-lg border border-gray-600 bg-gray-800/70 px-4 py-2.5 text-sm font-semibold text-gray-100 transition-colors hover:border-gray-500 hover:bg-gray-700"
+                            >
+                                浏览贡献数据 <span className="ml-2" aria-hidden="true">↓</span>
+                            </a>
+                        </div>
+                    </div>
+
+                    <div className="rounded-xl border border-white/10 bg-gray-950/35 p-5 backdrop-blur-sm">
+                        <p className="text-sm font-semibold text-gray-200">看板范围</p>
+                        <div className="mt-4 grid grid-cols-3 gap-3">
+                            <ScopeStat label="纳入统计" value={summary?.tracked_repositories} unit="个仓库" />
+                            <ScopeStat label="组织仓库" value={summary?.organization_repositories} unit="个仓库" />
+                            <ScopeStat label="技术小组" value={allSigs.length} unit="个 SIG" />
+                        </div>
+                        <p className="mt-4 border-t border-white/10 pt-4 text-xs leading-5 text-gray-400">
+                            统计范围以 GitHub 仓库的 <code className="text-blue-300">osd_sig</code> 属性为准。
+                            标记为 <code className="text-gray-300">untracked</code> 的仓库不进入汇总；fork 仓库可按所属 SIG 纳入。
+                        </p>
+                    </div>
+                </div>
+            </section>
+
             {/* Summary Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                <SummaryCard title="新 Pull Requests" value={summary?.new_prs} icon="🔀" color="blue" />
-                <SummaryCard title="已合并 PRs" value={summary?.closed_merged_prs} icon="✅" color="green" />
-                <SummaryCard title="新 Commits" value={summary?.new_commits} icon="💻" color="orange" />
+            <div id="contribution-overview" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8 scroll-mt-6">
+                <SummaryCard title="新建 PR" value={summary?.new_prs} icon="🔀" color="blue" />
+                <SummaryCard title="已合并 PR" value={summary?.closed_merged_prs} icon="✅" color="green" />
+                <SummaryCard title="新增 Commit" value={summary?.new_commits} icon="💻" color="orange" />
                 <SummaryCard title="活跃贡献者" value={summary?.active_contributors || "N/A"} subtext="(唯一)" icon="👥" color="purple" />
             </div>
 
@@ -257,11 +307,11 @@ const Dashboard = () => {
                 {/* Monthly Trends: PRs & Issues */}
                 <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-xl h-96">
                     <TrendChart
-                        title={`Contribution Trends (PRs & Issues) - ${granularity === 'day' ? '日' : granularity === 'week' ? '周' : '月'}视图`}
+                        title={`贡献趋势（PR 与 Issue）· ${granularity === 'day' ? '日' : granularity === 'week' ? '周' : '月'}视图`}
                         xAxisData={timeseries.map(t => t.date)}
                         seriesData={[
-                            { name: 'New PRs', data: timeseries.map(t => t.new_prs) },
-                            { name: 'New Issues', data: timeseries.map(t => t.new_issues) }
+                            { name: '新建 PR', data: timeseries.map(t => t.new_prs) },
+                            { name: '新建 Issue', data: timeseries.map(t => t.new_issues) }
                         ]}
                         colors={['#3b82f6', '#f59e0b']}
                         onDayClick={granularity === 'day' ? handlePRIssueChartClick : undefined}
@@ -271,10 +321,10 @@ const Dashboard = () => {
                 {/* Monthly Trends: Commits */}
                 <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-xl h-96">
                     <TrendChart
-                        title={`Code Activity (Commits) - ${granularity === 'day' ? '日' : granularity === 'week' ? '周' : '月'}视图`}
+                        title={`Commit 趋势 · ${granularity === 'day' ? '日' : granularity === 'week' ? '周' : '月'}视图`}
                         xAxisData={timeseries.map(t => t.date)}
                         seriesData={[
-                            { name: 'Commits', data: timeseries.map(t => t.new_commits) }
+                            { name: 'Commit', data: timeseries.map(t => t.new_commits) }
                         ]}
                         colors={['#10b981']}
                         onDayClick={granularity === 'day' ? handleCommitChartClick : undefined}
@@ -315,7 +365,7 @@ const Dashboard = () => {
                     </div>
                     <div className="flex-1">
                         <SIGComparisonChart
-                            title={`SIG Leaderboard (${sigMetrics.find(m => m.key === sigMetric)?.name})`}
+                            title={`SIG 排行（${sigMetrics.find(m => m.key === sigMetric)?.name}）`}
                             data={sigData}
                             metricKey={sigMetric}
                             metricName={sigMetrics.find(m => m.key === sigMetric)?.name}
@@ -328,10 +378,10 @@ const Dashboard = () => {
                 {/* Active Contributors Trend */}
                 <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-xl h-96">
                     <TrendChart
-                        title="Active Contributors Trend"
+                        title="活跃贡献者趋势"
                         xAxisData={timeseries.map(t => t.date)}
                         seriesData={[
-                            { name: 'Active Contributors', data: timeseries.map(t => t.active_contributors) }
+                            { name: '活跃贡献者', data: timeseries.map(t => t.active_contributors) }
                         ]}
                         colors={['#ec4899']}
                         onDayClick={granularity === 'day' ? handleContributorChartClick : undefined}
@@ -351,9 +401,33 @@ const Dashboard = () => {
                 {/* Contributor Leaderboard */}
                 <ContributorLeaderboard range={range} />
             </div>
+
+            <footer className="mt-12 border-t border-gray-800 py-8 text-sm text-gray-400">
+                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                    <div>
+                        <p className="font-medium text-gray-200">华科开放原子开源俱乐部</p>
+                        <p className="mt-1">开放 · 共享 · 协同 · 贡献</p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                        <span>数据来源：GitHub GraphQL API</span>
+                        <a className="text-blue-300 hover:text-blue-200" href="https://github.com/hust-open-atom-club" target="_blank" rel="noreferrer">
+                            GitHub 组织 ↗
+                        </a>
+                        <span>© {new Date().getFullYear()} HUST Open Atom Club</span>
+                    </div>
+                </div>
+            </footer>
         </div>
     );
 };
+
+const ScopeStat = ({ label, value, unit }) => (
+    <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+        <div className="text-xl font-bold text-white md:text-2xl">{value?.toLocaleString() ?? '—'}</div>
+        <div className="mt-1 text-xs text-gray-400">{label}</div>
+        <div className="text-[11px] text-gray-500">{unit}</div>
+    </div>
+);
 
 const SummaryCard = ({ title, value, icon, color, subtext }) => {
     const colorClasses = {
