@@ -20,6 +20,7 @@ const {
     DEFAULT_PROPERTY_NAME,
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
+const { syncAssociatedOrgRepositories } = require('./associated_repository_sync');
 const { runPromisesWithConcurrency } = require('./promise_concurrency');
 const {
     MAX_RATE_LIMIT_RETRIES,
@@ -172,12 +173,33 @@ async function synchronizeRepositoryMetadata() {
         `${result.tracked} tracked, ${result.untracked} untracked, ${result.changes.length} changed.`
     );
 
-    if (result.changes.length > 0 && redisClient.isOpen) {
+    // Associated organizations (outside hust-open-atom-club) are enumerated
+    // from associated_org_trackings; their public repositories declare SIG
+    // membership through the osd_sig Custom Property.
+    const associatedResult = await syncAssociatedOrgRepositories({
+        pool,
+        githubToken: GITHUB_TOKEN,
+        orgName: ORG_NAME,
+    });
+
+    console.log(
+        `[Associated Org Sync] ${associatedResult.configurations} organization(s), ` +
+        `${associatedResult.repositories} repositories: ` +
+        `${associatedResult.created} created, ${associatedResult.disabled} disabled, ` +
+        `${associatedResult.changes.length} changed.` +
+        (associatedResult.perOwner.some((result) => result.skippedPrivate.length > 0)
+            ? ` Skipped private repositories: ${associatedResult.perOwner
+                .flatMap((result) => result.skippedPrivate.map((name) => `${result.ownerLogin}/${name}`))
+                .join(', ')}.`
+            : '')
+    );
+
+    if ((result.changes.length > 0 || associatedResult.changes.length > 0) && redisClient.isOpen) {
         await redisClient.flushAll();
         console.log('[Repository SIG Sync] Redis cache cleared after historical re-aggregation.');
     }
 
-    return result;
+    return { ...result, associated: associatedResult };
 }
 
 async function retryWithBackoff(fn, retries = 3, delayMs = 1000) {
@@ -347,7 +369,7 @@ async function githubGraphQL(query, variables = {}, retryCount = 0) {
  * @param {Date} endDate End of date range
  * @returns {Promise<{statsMap: Map<string, object>, contributorDetailsMap: Map<string, Map>}>}
  */
-async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
+async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate, ownerLogin = ORG_NAME) {
     const startDateStr = formatDate(startDate);
     const endDateStr = formatDate(endDate);
 
@@ -436,7 +458,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
 
         while (!prDone) {
             const data = await githubGraphQL(query, {
-                owner: ORG_NAME,
+                owner: ownerLogin,
                 repo: repoName,
                 prCursor: prCursor,
                 issueCursor: null,
@@ -490,7 +512,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
 
         while (!issueDone) {
             const data = await githubGraphQL(query, {
-                owner: ORG_NAME,
+                owner: ownerLogin,
                 repo: repoName,
                 prCursor: null,
                 issueCursor: issueCursor,
@@ -576,9 +598,12 @@ async function storeRepoApiStatsForDate(repoId, repoName, dateStr, stats, contri
  * [PIPELINE 1] Fetches commit history via GraphQL and stores it.
  * This process is completely independent of the API fetching process.
  */
-async function fetchAndStoreRepoCommitStats(repoId, repoName, targetDate) {
-    const commitStats = await fetchCommitsViaGraphQL(repoName, targetDate, githubGraphQL, ORG_NAME);
-    await storeRepoCommitStats(repoId, repoName, targetDate, commitStats);
+async function fetchAndStoreRepoCommitStats(repo, targetDate) {
+    const ownerLogin = repo.owner_login || ORG_NAME;
+    // Commit statistics always come from the repository's default branch,
+    // uniformly for club and associated-organization repositories.
+    const commitStats = await fetchCommitsViaGraphQL(repo.name, targetDate, githubGraphQL, ownerLogin);
+    await storeRepoCommitStats(repo.id, repo.name, targetDate, commitStats);
 }
 
 async function storeRepoCommitStats(repoId, repoName, targetDate, commitStats) {
@@ -604,15 +629,16 @@ async function storeRepoCommitStats(repoId, repoName, targetDate, commitStats) {
 async function fetchCommitHistoryForRepositories(repositories, startDate, endDate) {
     const historyByRepoId = new Map();
     const tasks = repositories.map((repo) => async () => {
+        const ownerLogin = repo.owner_login || ORG_NAME;
         const statsMap = await fetchCommitHistoryViaGraphQL(
             repo.name,
             startDate,
             endDate,
             githubGraphQL,
-            ORG_NAME
+            ownerLogin
         );
         historyByRepoId.set(repo.id, statsMap);
-        console.log(`[GraphQL Commits] ${repo.name}: fetched ${statsMap.size} days`);
+        console.log(`[GraphQL Commits] ${ownerLogin}/${repo.name}: fetched ${statsMap.size} days`);
     });
 
     await runPromisesWithConcurrency(tasks, 5);
@@ -642,7 +668,9 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails) {
  * [PIPELINE 2] Fetches ONLY API-related stats (PRs, Issues) and stores them.
  * This process is completely independent of the commit-history process.
  */
-async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
+async function fetchAndStoreRepoApiStats(repo, targetDate) {
+    const repoId = repo.id;
+    const repoName = repo.name;
     const targetDateStr = formatDate(targetDate);
     console.log(`[API Pipeline] Starting to fetch API stats for: ${repoName}`);
 
@@ -651,6 +679,7 @@ async function fetchAndStoreRepoApiStats(repoId, repoName, targetDate) {
             githubRest,
             pool,
             orgName: ORG_NAME,
+            ownerLogin: repo.owner_login || ORG_NAME,
             repoId,
             repoName,
             snapshotDate: targetDateStr,
@@ -861,7 +890,7 @@ async function runDailyIngestionJob() {
             return;
         }
 
-        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
+        const reposResult = await pool.query('SELECT id, name, sig_id, owner_login FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
         const repositories = reposResult.rows;
 
         if (repositories.length === 0) {
@@ -876,7 +905,7 @@ async function runDailyIngestionJob() {
         // --- PIPELINE 1: Process all GraphQL commit stats ---
         console.log('\n--- [Phase 1/3] Starting GraphQL Commit Stats Ingestion ---');
         const commitTasks = repositories.map(repo =>
-            () => fetchAndStoreRepoCommitStats(repo.id, repo.name, targetDate)
+            () => fetchAndStoreRepoCommitStats(repo, targetDate)
         );
         await runPromisesWithConcurrency(commitTasks, commitConcurrencyLimit);
         console.log('--- [Phase 1/3] GraphQL Commit Stats Ingestion Finished ---');
@@ -884,7 +913,7 @@ async function runDailyIngestionJob() {
         // --- PIPELINE 2: Process all API-based stats ---
         console.log('\n--- [Phase 2/3] Starting GitHub API Stats Ingestion ---');
         const apiTasks = repositories.map(repo =>
-            () => fetchAndStoreRepoApiStats(repo.id, repo.name, targetDate)
+            () => fetchAndStoreRepoApiStats(repo, targetDate)
         );
         await runPromisesWithConcurrency(apiTasks, apiConcurrencyLimit);
         console.log('--- [Phase 2/3] GitHub API Stats Ingestion Finished ---');
@@ -980,7 +1009,7 @@ async function runBackfillJob(days = 7) {
             return;
         }
 
-        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
+        const reposResult = await pool.query('SELECT id, name, sig_id, owner_login FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
         const repositories = reposResult.rows;
 
         if (repositories.length === 0) {
@@ -1072,7 +1101,7 @@ async function runBackfillJob(days = 7) {
             // --- PIPELINE 2: Process all API-based stats for the target date ---
             console.log(`[${targetDateStr}] [Phase 2/3] Starting GitHub API Stats Backfill...`);
             const apiTasks = repositories.map(repo =>
-                () => fetchAndStoreRepoApiStats(repo.id, repo.name, targetDate)
+                () => fetchAndStoreRepoApiStats(repo, targetDate)
             );
             await runPromisesWithConcurrency(apiTasks, apiConcurrencyLimit);
             console.log(`[${targetDateStr}] [Phase 2/3] GitHub API Stats Backfill Finished.`);
@@ -1167,7 +1196,7 @@ async function runBackfillJobWithGraphQL(days = 30) {
             return;
         }
 
-        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
+        const reposResult = await pool.query('SELECT id, name, sig_id, owner_login FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
         const repositories = reposResult.rows;
 
         if (repositories.length === 0) {
@@ -1224,7 +1253,8 @@ async function runBackfillJobWithGraphQL(days = 30) {
                 const { statsMap, contributorDetailsMap } = await fetchRepoStatsViaGraphQL(
                     repo.name,
                     startDate,
-                    endDate
+                    endDate,
+                    repo.owner_login || ORG_NAME
                 );
 
                 // Store each date's stats to the database
@@ -2935,7 +2965,7 @@ app.get('/api/v1/organization/day/:date', async (req, res) => {
 
         // Get repo-level breakdown for this date
         const repoBreakdownResult = await pool.query(
-            `SELECT r.name as repo_name, r.id as repo_id, 
+            `SELECT r.name as repo_name, r.id as repo_id, r.owner_login as repo_owner,
                     rs.new_prs, rs.closed_merged_prs, rs.new_issues, rs.closed_issues,
                     rs.new_commits, rs.active_contributors
              FROM repo_snapshots rs
@@ -2993,6 +3023,7 @@ app.get('/api/v1/organization/day/:date', async (req, res) => {
             },
             repos: repoBreakdownResult.rows.map(r => ({
                 name: r.repo_name,
+                owner: r.repo_owner,
                 id: r.repo_id,
                 prs: { opened: r.new_prs, closed: r.closed_merged_prs },
                 issues: { opened: r.new_issues, closed: r.closed_issues },
@@ -3295,7 +3326,7 @@ app.get('/api/v1/contributors/:username', async (req, res) => {
 
         // 获取活跃仓库
         const reposResult = await pool.query(
-            `SELECT r.name, r.id,
+            `SELECT r.name, r.id, r.owner_login,
                     SUM(COALESCE(cra.prs_opened, 0)
                       + COALESCE(cra.prs_closed, 0)
                       + COALESCE(cra.issues_opened, 0)
@@ -3305,7 +3336,7 @@ app.get('/api/v1/contributors/:username', async (req, res) => {
              JOIN repositories r ON cra.repo_id = r.id
              WHERE cra.contributor_id = $1 AND cra.snapshot_date >= $2
                AND r.sig_id IS NOT NULL
-             GROUP BY r.id, r.name
+             GROUP BY r.id, r.name, r.owner_login
              ORDER BY total_activities DESC`,
             [contributor.id, startDateStr]
         );
@@ -3328,6 +3359,7 @@ app.get('/api/v1/contributors/:username', async (req, res) => {
             })),
             active_repos: reposResult.rows.map(row => ({
                 name: row.name,
+                owner: row.owner_login,
                 id: row.id,
                 total_activities: parseInt(row.total_activities)
             }))

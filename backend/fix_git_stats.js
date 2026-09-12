@@ -9,6 +9,7 @@ const {
     DEFAULT_PROPERTY_NAME,
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
+const { syncAssociatedOrgRepositories } = require('./associated_repository_sync');
 const { persistRepoCommitStats } = require('./commit_author_stats');
 
 const ORG_NAME = 'hust-open-atom-club'; // 确保与主程序一致
@@ -103,6 +104,11 @@ async function runCommitStatsCorrection(daysToFix = 30) {
         orgName: ORG_NAME,
         propertyName: process.env.GITHUB_SIG_PROPERTY || DEFAULT_PROPERTY_NAME,
     });
+    await syncAssociatedOrgRepositories({
+        pool,
+        githubToken: process.env.GITHUB_TOKEN,
+        orgName: ORG_NAME,
+    });
 
     // 获取所有需要监控的仓库
     const orgResult = await pool.query("SELECT id FROM organizations WHERE name = $1", [ORG_NAME]);
@@ -110,7 +116,7 @@ async function runCommitStatsCorrection(daysToFix = 30) {
     if (!org) {
         throw new Error('Monitored organization not found in DB.');
     }
-    const reposResult = await pool.query('SELECT id, name FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
+    const reposResult = await pool.query('SELECT id, name, owner_login FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
     const repositories = reposResult.rows;
     console.log(`Found ${repositories.length} repositories to process.`);
 
@@ -123,8 +129,9 @@ async function runCommitStatsCorrection(daysToFix = 30) {
     endDate.setDate(today.getDate() - 1);
 
     const tasks = repositories.map(repo => async () => {
-        console.log(`\n--- Fetching ${repo.name}: ${formatDate(startDate)} to ${formatDate(endDate)} ---`);
-        const statsMap = await fetchCommitHistoryViaGraphQL(repo.name, startDate, endDate);
+        const ownerLogin = repo.owner_login || ORG_NAME;
+        console.log(`\n--- Fetching ${ownerLogin}/${repo.name}: ${formatDate(startDate)} to ${formatDate(endDate)} ---`);
+        const statsMap = await fetchCommitHistoryViaGraphQL(repo.name, startDate, endDate, undefined, ownerLogin);
 
         for (let i = daysToFix; i >= 1; i--) {
             const targetDate = new Date(today);

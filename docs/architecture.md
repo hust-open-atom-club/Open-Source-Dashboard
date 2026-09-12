@@ -61,6 +61,20 @@ GitHub Repository Custom Property `osd_sig` 是仓库 SIG 归属的唯一来源�
 
 后端启动、定时采集和历史回填前都会同步仓库归属。仓库列表和 Custom Properties 会完整分页读取；属性定义不匹配、仓库属性缺失或重复、出现不支持的枚举值，或无法取得完整分页数据时，同步会整体失败，不会把部分结果写入数据库。
 
+### 关联组织跟踪
+
+`associated_org_trackings` 表配置仪表盘组织之外的关联 GitHub 组织（预置 `rustsbi`）。这些组织的仓库通过与仪表盘组织**相同的 `osd_sig` Custom Property** 声明 SIG 归属，与 club 属性同步一起执行：
+
+- 属性值为受支持的 SIG（如 `r2`）：公开仓库归入该 SIG 并参与统计。
+- 未设置属性或值为 `untracked`：不跟踪。
+- 属性值不受支持、同一仓库出现多个 `osd_sig` 值、或声明仓库不在组织仓库列表中：同步整体失败（fail-closed），不会写入部分结果。
+- 私有仓库原则上不跟踪：即使设置了 `osd_sig` 也会跳过（同步结果中会记录跳过名单）。
+- 仓库取消声明、转为私有或被移出组织：保留历史数据，但停止采集并从聚合中排除。
+- 关联组织仓库在 `repositories` 表中以 `owner_login` 区分；club 内同名 fork（如 `hust-open-atom-club/rustsbi`）与关联组织仓库（`rustsbi/rustsbi`）可共存，唯一约束为 `(org_id, owner_login, name)`。club 组织的 `osd_sig` 同步不会影响关联组织的仓库行，两套来源互不干扰。
+- Commit 统计口径与其他仓库完全一致，仅取默认分支。
+
+与 club 组织不同，仪表盘 Token 通常无法读取关联组织的属性定义（schema 需要 org 管理员权限），因此只对属性值本身做白名单校验。关联组织需先在 GitHub 组织设置中定义 `osd_sig` 属性（单选，允许值覆盖仪表盘支持的 SIG 与 `untracked`，并设为公开可见），再为需要跟踪的仓库设置属性值。
+
 ## Commit 与贡献者口径
 
 - Commit 数据来自每个仓库的默认分支历史，并按本地日期分桶到统计区间。

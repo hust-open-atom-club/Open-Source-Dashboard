@@ -32,6 +32,76 @@ function createEmptyCommitStats() {
     };
 }
 
+function validateDateRange(startDate, endDate) {
+    const normalizedStartDate = normalizeDate(startDate);
+    const normalizedEndDate = normalizeDate(endDate);
+
+    if (Number.isNaN(normalizedStartDate.getTime()) || Number.isNaN(normalizedEndDate.getTime())) {
+        throw new Error('startDate and endDate must be valid dates.');
+    }
+
+    if (normalizedStartDate > normalizedEndDate) {
+        throw new Error('startDate cannot be later than endDate.');
+    }
+
+    return { normalizedStartDate, normalizedEndDate };
+}
+
+function buildDailyStatsMap(normalizedStartDate, normalizedEndDate) {
+    const statsMap = new Map();
+    const currentDate = new Date(normalizedStartDate);
+    while (currentDate <= normalizedEndDate) {
+        statsMap.set(formatDate(currentDate), createEmptyCommitStats());
+        currentDate.setDate(currentDate.getDate() + 1);
+    }
+    return statsMap;
+}
+
+function applyCommitToStats(result, commit) {
+    // Match `git log --numstat`: merge commits still count as commits,
+    // but their combined diff must not duplicate changes already
+    // attributed to the commits merged into the target branch.
+    const isMergeCommit = commit.parents?.totalCount > 1;
+    const additions = isMergeCommit ? 0 : (commit.additions || 0);
+    const deletions = isMergeCommit ? 0 : (commit.deletions || 0);
+    result.new_commits++;
+    result.lines_added += additions;
+    result.lines_deleted += deletions;
+
+    const user = commit.author?.user;
+    if (!user?.login || isBotContributor(user.login)) {
+        return;
+    }
+
+    if (!result.authorStats[user.login]) {
+        result.authorStats[user.login] = {
+            github_id: user.databaseId,
+            avatar_url: user.avatarUrl,
+            commits: 0,
+            lines_added: 0,
+            lines_deleted: 0,
+        };
+    }
+
+    result.authorStats[user.login].commits++;
+    result.authorStats[user.login].lines_added += additions;
+    result.authorStats[user.login].lines_deleted += deletions;
+}
+
+function recordHistoryNode(statsMap, commit, repoName) {
+    const commitDate = new Date(commit.committedDate);
+    if (Number.isNaN(commitDate.getTime())) {
+        throw new Error(`Repository ${repoName} returned a commit without a valid committedDate.`);
+    }
+    const dateKey = formatDate(commitDate);
+    const result = statsMap.get(dateKey);
+    if (!result) {
+        return;
+    }
+
+    applyCommitToStats(result, commit);
+}
+
 async function defaultGraphQLClient(query, variables = {}, options = {}) {
     const token = process.env.GITHUB_TOKEN;
     if (!token) {
@@ -86,26 +156,12 @@ async function fetchCommitHistoryViaGraphQL(
     graphQLClient = defaultGraphQLClient,
     orgName = DEFAULT_ORG_NAME
 ) {
-    const normalizedStartDate = normalizeDate(startDate);
-    const normalizedEndDate = normalizeDate(endDate);
-
-    if (Number.isNaN(normalizedStartDate.getTime()) || Number.isNaN(normalizedEndDate.getTime())) {
-        throw new Error('startDate and endDate must be valid dates.');
-    }
-
-    if (normalizedStartDate > normalizedEndDate) {
-        throw new Error('startDate cannot be later than endDate.');
-    }
+    const { normalizedStartDate, normalizedEndDate } = validateDateRange(startDate, endDate);
 
     const endExclusive = new Date(normalizedEndDate);
     endExclusive.setDate(endExclusive.getDate() + 1);
 
-    const statsMap = new Map();
-    const currentDate = new Date(normalizedStartDate);
-    while (currentDate <= normalizedEndDate) {
-        statsMap.set(formatDate(currentDate), createEmptyCommitStats());
-        currentDate.setDate(currentDate.getDate() + 1);
-    }
+    const statsMap = buildDailyStatsMap(normalizedStartDate, normalizedEndDate);
 
     const query = `
         query RepoCommits($owner: String!, $repo: String!, $since: GitTimestamp!, $until: GitTimestamp!, $cursor: String) {
@@ -168,45 +224,7 @@ async function fetchCommitHistoryViaGraphQL(
             }
 
             for (const commit of history.nodes) {
-                const commitDate = new Date(commit.committedDate);
-                if (Number.isNaN(commitDate.getTime())) {
-                    throw new Error(`Repository ${repoName} returned a commit without a valid committedDate.`);
-                }
-
-                const dateKey = formatDate(commitDate);
-                const result = statsMap.get(dateKey);
-                if (!result) {
-                    continue;
-                }
-
-                // Match `git log --numstat`: merge commits still count as commits,
-                // but their combined diff must not duplicate changes already
-                // attributed to the commits merged into the default branch.
-                const isMergeCommit = commit.parents?.totalCount > 1;
-                const additions = isMergeCommit ? 0 : (commit.additions || 0);
-                const deletions = isMergeCommit ? 0 : (commit.deletions || 0);
-                result.new_commits++;
-                result.lines_added += additions;
-                result.lines_deleted += deletions;
-
-                const user = commit.author?.user;
-                if (!user?.login || isBotContributor(user.login)) {
-                    continue;
-                }
-
-                if (!result.authorStats[user.login]) {
-                    result.authorStats[user.login] = {
-                        github_id: user.databaseId,
-                        avatar_url: user.avatarUrl,
-                        commits: 0,
-                        lines_added: 0,
-                        lines_deleted: 0,
-                    };
-                }
-
-                result.authorStats[user.login].commits++;
-                result.authorStats[user.login].lines_added += additions;
-                result.authorStats[user.login].lines_deleted += deletions;
+                recordHistoryNode(statsMap, commit, repoName);
             }
 
             hasNextPage = history.pageInfo?.hasNextPage || false;
