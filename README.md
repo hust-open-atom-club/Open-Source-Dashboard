@@ -45,6 +45,14 @@ GITHUB_TOKEN=YOUR_GITHUB_PERSONAL_ACCESS_TOKEN
 POSTGRES_PASSWORD=your_postgres_password
 ```
 
+数据采集默认每 6 小时执行一次，需要调整时在 `.env` 中设置 cron 表达式：
+
+```env
+INGESTION_CRON_SCHEDULE=0 */6 * * *
+```
+
+表达式非法时，后端会在启动阶段打印出错的变量名和原因，并以非 0 状态退出。
+
 启动服务：
 
 ```bash

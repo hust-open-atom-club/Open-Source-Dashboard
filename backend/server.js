@@ -49,6 +49,10 @@ const {
     formatGrowthMetrics,
     hasCompletePeriodDates,
 } = require('./growth_analysis');
+const {
+    INGESTION_CRON_SCHEDULE_ENV_VAR,
+    resolveIngestionCronSchedule,
+} = require('./cron_schedule');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1330,9 +1334,19 @@ async function runBackfillJobWithGraphQL(days = 30) {
     }
 }
 
-// Schedule the job to run once every 24 hours (e.g., at 00:00 UTC)
-// cron.schedule('0 0 * * *', runDailyIngestionJob); // Daily at midnight
-cron.schedule('0 */6 * * *', runDailyIngestionJob); // Every 6 hours for testing
+// Data collection runs on a configurable cron schedule and defaults to every 6 hours.
+// Validate before registering so a bad value fails startup instead of leaving the
+// service running with an unusable schedule.
+let ingestionCronSchedule;
+try {
+    ingestionCronSchedule = resolveIngestionCronSchedule(process.env[INGESTION_CRON_SCHEDULE_ENV_VAR]);
+} catch (error) {
+    console.error(`[Startup] Invalid data collection schedule: ${error.message}`);
+    process.exit(1);
+}
+
+cron.schedule(ingestionCronSchedule, runDailyIngestionJob);
+console.log(`[Startup] Data collection scheduled with cron expression "${ingestionCronSchedule}".`);
 
 // --- API Routes ---
 
