@@ -55,6 +55,7 @@ const PORT = process.env.PORT || 3000;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_API_BASE = 'https://api.github.com';
 const ORG_NAME = 'hust-open-atom-club';
+const { resolveRepository } = require('./repository_name');
 const HUMAN_CONTRIBUTOR_SQL = buildHumanContributorSqlCondition('c.github_username');
 const TRACKED_CONTRIBUTOR_ACTIVITY_SQL = `EXISTS (
     SELECT 1
@@ -436,8 +437,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
 
         while (!prDone) {
             const data = await githubGraphQL(query, {
-                owner: ORG_NAME,
-                repo: repoName,
+                ...resolveRepository(repoName, ORG_NAME),
                 prCursor: prCursor,
                 issueCursor: null,
             });
@@ -490,8 +490,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate) {
 
         while (!issueDone) {
             const data = await githubGraphQL(query, {
-                owner: ORG_NAME,
-                repo: repoName,
+                ...resolveRepository(repoName, ORG_NAME),
                 prCursor: null,
                 issueCursor: issueCursor,
             });

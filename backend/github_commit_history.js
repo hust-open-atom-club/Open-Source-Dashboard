@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { resolveRepository } = require('./repository_name');
 const { isBotContributor } = require('./contributor_filters');
 const {
     MAX_RATE_LIMIT_RETRIES,
@@ -147,8 +148,7 @@ async function fetchCommitHistoryViaGraphQL(
 
         while (hasNextPage) {
             const data = await graphQLClient(query, {
-                owner: orgName,
-                repo: repoName,
+                ...resolveRepository(repoName, orgName),
                 since: normalizedStartDate.toISOString(),
                 until: endExclusive.toISOString(),
                 cursor,
