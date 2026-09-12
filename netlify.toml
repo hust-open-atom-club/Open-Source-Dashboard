@@ -1,0 +1,27 @@
+# 构建配置：告诉 Netlify 怎么打包前端
+[build]
+  # 构建的工作目录：进入 frontend 文件夹执行命令
+  base = "frontend"
+  # 构建命令：先按锁定版本安装依赖，再执行生产打包
+  command = "npm ci && npm run build"
+  # 打包完成后发布的目录（Vite 产物默认在 dist）
+  publish = "dist"
+
+# 指定构建用的 Node.js 版本
+[build.environment]
+  NODE_VERSION = "20"
+
+# 路由规则：顺序很重要，从上到下匹配
+# 第一条：API 反向代理（必须放最前面，优先级最高）
+[[redirects]]
+  from = "/api/*"
+  # 这里先占位，等维护者确认实际后端地址后替换
+  to = "https://osd.openatom.club/api/:splat"
+  status = 200
+  force = true
+
+# 第二条：SPA 页面回退，解决刷新 404 问题
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
