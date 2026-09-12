@@ -97,7 +97,7 @@ npm run build
 
 ## 重要约定
 
-- `osd_sig` 是仓库 SIG 归属的唯一来源；值为 `untracked` 的仓库不参与后续采集和组织/SIG 聚合。
+- 组织内仓库的 SIG 归属来自 `osd_sig`；值为 `untracked` 的仓库不参与后续采集和组织/SIG 聚合。外部仓库在 [`backend/external_repositories.json`](backend/external_repositories.json) 中按 SIG slug 列出完整的 `owner/repo`，同步后计入对应 SIG 和本看板的仓库范围；RustSBI 项目归入 `r2`。
 - Commit 总数与代码行统计来自 GitHub 默认分支历史。Bot 提交属于仓库活动，但 Bot 账号不计入人类贡献者指标。
 - 服务启动时默认不清空 Redis，也不自动回填历史数据；高影响操作需要显式启用。
 - 不要提交 Token、数据库密码、本地 `.env` 或其他凭据。

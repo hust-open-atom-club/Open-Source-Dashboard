@@ -110,7 +110,9 @@ function mapRepositoryInsightRow(row, organizationName) {
     return {
         id: toInteger(row.id),
         name: row.name,
-        url: `https://github.com/${organizationName}/${encodeURIComponent(row.name)}`,
+        url: `https://github.com/${row.name.includes('/')
+            ? row.name.split('/').map(encodeURIComponent).join('/')
+            : `${organizationName}/${encodeURIComponent(row.name)}`}`,
         sig: {
             id: toInteger(row.sig_id),
             name: row.sig_name,

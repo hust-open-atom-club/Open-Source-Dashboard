@@ -1,4 +1,5 @@
 const { isBotContributor } = require('./contributor_filters');
+const { resolveRepository } = require('./repository_name');
 const { persistRepoApiStats: defaultPersistRepoApiStats } = require('./contributor_api_stats');
 
 function recordContributorActivities(contributorStats, items, metric) {
@@ -30,7 +31,8 @@ async function collectAndPersistRepoApiStats({
     snapshotDate,
     persistRepoApiStats = defaultPersistRepoApiStats,
 }) {
-    const repoQuery = `repo:${orgName}/${repoName}`;
+    const { owner, repo } = resolveRepository(repoName, orgName);
+    const repoQuery = `repo:${owner}/${repo}`;
 
     // Keep these requests sequential because GitHub's Search API has a low rate limit
     // and githubRest applies the delay and pagination policy between requests.

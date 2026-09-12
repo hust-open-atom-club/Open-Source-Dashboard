@@ -40,6 +40,7 @@ const {
 // --- Configuration ---
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const ORG_NAME = 'hust-open-atom-club';
+const { resolveRepository } = require('./repository_name');
 const PROGRESS_FILE = path.join(__dirname, 'backfill_progress.json');
 
 // --- Optimized Concurrency Settings ---
@@ -237,8 +238,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate, graphQLCli
 
         while (!prDone) {
             const data = await graphQLClient(query, {
-                owner: ORG_NAME,
-                repo: repoName,
+                ...resolveRepository(repoName, ORG_NAME),
                 prCursor: prCursor,
                 issueCursor: null,
             });
@@ -323,8 +323,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate, graphQLCli
 
         while (!issueDone) {
             const data = await graphQLClient(query, {
-                owner: ORG_NAME,
-                repo: repoName,
+                ...resolveRepository(repoName, ORG_NAME),
                 prCursor: null,
                 issueCursor: issueCursor,
             });
