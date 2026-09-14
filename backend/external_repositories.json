@@ -1,0 +1,25 @@
+{
+  "r2": [
+    "rustsbi/rustsbi",
+    "rustsbi/allwinner-hal",
+    "rustsbi/artinchip-hal",
+    "rustsbi/bouffalo-hal",
+    "rustsbi/kendryte-hal",
+    "rustsbi/sophgo-hal",
+    "rustsbi/spacemit-hal",
+    "rustsbi/th1520-hal",
+    "rustsbi/dw-apb-drivers",
+    "rustsbi/uart-rs",
+    "rustsbi/uart-xscale-rs",
+    "rustsbi/sifive-core",
+    "rustsbi/xuantie",
+    "rustsbi/aclint",
+    "rustsbi/clic",
+    "rustsbi/rpmi",
+    "rustsbi/embedded-hal-skills",
+    "rustsbi/010-editor-scripts",
+    "rustsbi/polyglink",
+    "rustsbi/lssbi",
+    "rustsbi/slides"
+  ]
+}

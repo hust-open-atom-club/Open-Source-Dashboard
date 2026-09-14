@@ -1,4 +1,5 @@
 const axios = require('axios');
+const externalRepositories = require('./external_repositories.json');
 
 const DEFAULT_ORG_NAME = 'hust-open-atom-club';
 const DEFAULT_PROPERTY_NAME = 'osd_sig';
@@ -225,6 +226,7 @@ async function fetchRepositorySigAssignments({
     orgName = DEFAULT_ORG_NAME,
     propertyName = DEFAULT_PROPERTY_NAME,
     httpClient = axios,
+    externalRepositorySigs = {},
 }) {
     const headers = githubHeaders(githubToken);
     const encodedOrg = encodeURIComponent(orgName);
@@ -265,6 +267,29 @@ async function fetchRepositorySigAssignments({
         nextUrl = getNextPageUrl(response.headers?.link);
     }
 
+    // Fetch every external identity before validation and database writes.
+    for (const [sigSlug, repositories] of Object.entries(externalRepositorySigs)) {
+        if (!Object.hasOwn(SIG_DEFINITIONS, sigSlug) || !Array.isArray(repositories)) {
+            throw new Error(`Invalid external repository SIG: ${sigSlug}`);
+        }
+        for (const fullName of repositories) {
+            if (typeof fullName !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(fullName)) {
+                throw new Error(`Invalid external repository name: ${fullName}`);
+            }
+            const response = await httpClient.get(`https://api.github.com/repos/${fullName}`, {
+                headers, timeout: 30000,
+            });
+            const canonicalName = response.data?.full_name;
+            if (typeof canonicalName !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(canonicalName)) {
+                throw new Error(`GitHub returned an invalid full_name for ${fullName}`);
+            }
+            rows.push({
+                repository_id: response.data.id,
+                repository_name: canonicalName,
+                properties: [{ property_name: propertyName, value: sigSlug }],
+            });
+        }
+    }
     return normalizeAssignments(rows, propertyName);
 }
 
@@ -590,12 +615,14 @@ async function syncRepositorySigsFromGitHub({
     orgName = DEFAULT_ORG_NAME,
     propertyName = DEFAULT_PROPERTY_NAME,
     httpClient = axios,
+    externalRepositorySigs = orgName === DEFAULT_ORG_NAME ? externalRepositories : {},
 }) {
     const assignments = await fetchRepositorySigAssignments({
         githubToken,
         orgName,
         propertyName,
         httpClient,
+        externalRepositorySigs,
     });
 
     return applyRepositorySigAssignments({ pool, assignments, orgName });
