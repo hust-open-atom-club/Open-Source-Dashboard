@@ -3,6 +3,10 @@ SET client_encoding = 'UTF8';
 
 -- Repository-to-SIG assignments are synchronized from GitHub's osd_sig
 -- Custom Property. This seed only creates the organization and supported SIGs.
+-- Associated organizations (outside hust-open-atom-club) are configured in
+-- associated_org_trackings (see schema.sql); the rustsbi org is
+-- pre-configured, and its repositories declare their SIG via the same
+-- osd_sig Custom Property (e.g. r2).
 INSERT INTO organizations (name) VALUES
 ('hust-open-atom-club')
 ON CONFLICT (name) DO NOTHING;
@@ -18,3 +22,11 @@ INSERT INTO special_interest_groups (org_id, slug, name) VALUES
 ((SELECT id FROM organizations WHERE name = 'hust-open-atom-club'), 'openharmony', 'OpenHarmony SIG'),
 ((SELECT id FROM organizations WHERE name = 'hust-open-atom-club'), 'rtthread', 'RT-thread SIG')
 ON CONFLICT (org_id, slug) DO UPDATE SET name = EXCLUDED.name;
+
+-- Associated (related) org tracking: rustsbi repositories that declare a
+-- supported SIG through the osd_sig Custom Property (e.g. osd_sig=r2, public
+-- repositories only) are tracked under that SIG; commit statistics use the
+-- default branch only.
+INSERT INTO associated_org_trackings (owner_login)
+VALUES ('rustsbi')
+ON CONFLICT (owner_login) DO NOTHING;

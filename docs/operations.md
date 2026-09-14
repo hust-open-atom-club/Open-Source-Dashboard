@@ -106,7 +106,13 @@ node backfill_date_range.js --start-date 2026-09-01 --end-date 2026-09-07
 node backfill_single_repo.js repository-name
 ```
 
-脚本接收组织内的仓库名称，不包含 `owner/` 前缀，默认回填最近 30 天，并写入该仓库的 Commit、PR 和 Issue 快照。它不会完整更新 SIG 和组织级聚合：随后运行 `run_reaggregation.js` 只能同步 Commit 与代码行，不能同步 PR 和 Issue。
+关联组织的仓库需在仓库名后传入 GitHub owner（默认为仪表盘组织）：
+
+```bash
+node backfill_single_repo.js rustsbi rustsbi
+```
+
+脚本接收仓库名称，不包含 `owner/` 前缀，默认回填最近 30 天，并写入该仓库的 Commit、PR 和 Issue 快照。它不会完整更新 SIG 和组织级聚合：随后运行 `run_reaggregation.js` 只能同步 Commit 与代码行，不能同步 PR 和 Issue。
 
 如果修复涉及 PR 或 Issue，并要求仓库、SIG 和组织数据保持一致，应改用覆盖相同日期的 `backfill_date_range.js`。该脚本会处理全部受跟踪仓库，并重建目标日期的全部上层指标。以上命令在容器中执行时，在命令前加 `docker compose exec backend`。
 

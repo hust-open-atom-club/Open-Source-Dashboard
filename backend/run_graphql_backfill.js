@@ -26,6 +26,7 @@ const {
     DEFAULT_PROPERTY_NAME,
     syncRepositorySigsFromGitHub,
 } = require('./repository_sig_sync');
+const { syncAssociatedOrgRepositories } = require('./associated_repository_sync');
 const { runPromisesWithConcurrency } = require('./promise_concurrency');
 const {
     MAX_RATE_LIMIT_RETRIES,
@@ -167,7 +168,7 @@ async function githubGraphQL(query, variables = {}, retryCount = 0) {
 }
 
 // --- Fetch Repo Stats via GraphQL ---
-async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate, graphQLClient = githubGraphQL) {
+async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate, graphQLClient = githubGraphQL, ownerLogin = ORG_NAME) {
     const startDateStr = formatDate(startDate);
     const endDateStr = formatDate(endDate);
 
@@ -237,7 +238,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate, graphQLCli
 
         while (!prDone) {
             const data = await graphQLClient(query, {
-                owner: ORG_NAME,
+                owner: ownerLogin,
                 repo: repoName,
                 prCursor: prCursor,
                 issueCursor: null,
@@ -323,7 +324,7 @@ async function fetchRepoStatsViaGraphQL(repoName, startDate, endDate, graphQLCli
 
         while (!issueDone) {
             const data = await graphQLClient(query, {
-                owner: ORG_NAME,
+                owner: ownerLogin,
                 repo: repoName,
                 prCursor: null,
                 issueCursor: issueCursor,
@@ -453,12 +454,12 @@ async function storeContributorActivities(repoId, dateStr, contributorDetails, d
 }
 
 // Keep the default client here so the backfill shares its adaptive rate-limit tracking.
-async function fetchCommitsViaGraphQL(repoName, targetDate, graphQLClient = githubGraphQL) {
-    return fetchCommitsForDayViaGraphQL(repoName, targetDate, graphQLClient, ORG_NAME);
+async function fetchCommitsViaGraphQL(repoName, targetDate, graphQLClient = githubGraphQL, ownerLogin = ORG_NAME) {
+    return fetchCommitsForDayViaGraphQL(repoName, targetDate, graphQLClient, ownerLogin);
 }
 
-async function fetchCommitHistoryViaGraphQL(repoName, startDate, endDate, graphQLClient = githubGraphQL) {
-    return fetchCommitHistoryRangeViaGraphQL(repoName, startDate, endDate, graphQLClient, ORG_NAME);
+async function fetchCommitHistoryViaGraphQL(repoName, startDate, endDate, graphQLClient = githubGraphQL, ownerLogin = ORG_NAME) {
+    return fetchCommitHistoryRangeViaGraphQL(repoName, startDate, endDate, graphQLClient, ownerLogin);
 }
 
 /**
@@ -604,7 +605,20 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
             `${syncResult.tracked} tracked, ${syncResult.untracked} untracked, ` +
             `${syncResult.changes.length} changed.`
         );
-        if (syncResult.changes.length > 0) {
+
+        const associatedSyncResult = await syncAssociatedOrgRepositories({
+            pool,
+            githubToken: GITHUB_TOKEN,
+            orgName: ORG_NAME,
+        });
+        console.log(
+            `[Associated Org Sync] ${associatedSyncResult.configurations} organization(s), ` +
+            `${associatedSyncResult.repositories} repositories: ` +
+            `${associatedSyncResult.created} created, ${associatedSyncResult.disabled} disabled, ` +
+            `${associatedSyncResult.changes.length} changed.`
+        );
+
+        if (syncResult.changes.length > 0 || associatedSyncResult.changes.length > 0) {
             if (!redisClient.isOpen) {
                 await redisClient.connect();
             }
@@ -619,7 +633,7 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
             return;
         }
 
-        const reposResult = await pool.query('SELECT id, name, sig_id FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
+        const reposResult = await pool.query('SELECT id, name, sig_id, owner_login FROM repositories WHERE org_id = $1 AND sig_id IS NOT NULL', [org.id]);
         const repositories = reposResult.rows;
 
         if (repositories.length === 0) {
@@ -649,7 +663,7 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
             const pendingDates = allDates.filter((targetDate) => {
                 const dateStr = formatDate(targetDate);
                 // Keep the legacy key so interrupted backfills can resume across this upgrade.
-                const taskKey = `git:${repo.name}:${dateStr}`;
+                const taskKey = `git:${repo.owner_login || ORG_NAME}/${repo.name}:${dateStr}`;
                 if (progress.completedRepos[taskKey]) {
                     commitDatesSkipped++;
                     return false;
@@ -666,12 +680,14 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
                 const statsMap = await fetchCommitHistoryViaGraphQL(
                     repo.name,
                     normalizedStartDate,
-                    normalizedEndDate
+                    normalizedEndDate,
+                    githubGraphQL,
+                    repo.owner_login || ORG_NAME
                 );
 
                 for (const targetDate of pendingDates) {
                     const dateStr = formatDate(targetDate);
-                    const taskKey = `git:${repo.name}:${dateStr}`;
+                    const taskKey = `git:${repo.owner_login || ORG_NAME}/${repo.name}:${dateStr}`;
                     await storeRepoCommitStats(repo.id, repo.name, targetDate, statsMap.get(dateStr));
                     progress.completedRepos[taskKey] = true;
                 }
@@ -685,14 +701,20 @@ async function runGraphQLBackfillForRange({ startDate, endDate, progressFile = P
         const graphqlTasks = [];
         let graphqlTasksSkipped = 0;
         for (const repo of repositories) {
-            const taskKey = `graphql:${repo.name}`;
+            const taskKey = `graphql:${repo.owner_login || ORG_NAME}/${repo.name}`;
             if (progress.completedRepos[taskKey]) {
                 graphqlTasksSkipped++;
                 continue;
             }
             graphqlTasks.push(async () => {
                 try {
-                    const { statsMap, contributorDetailsMap } = await fetchRepoStatsViaGraphQL(repo.name, normalizedStartDate, normalizedEndDate);
+                    const { statsMap, contributorDetailsMap } = await fetchRepoStatsViaGraphQL(
+                        repo.name,
+                        normalizedStartDate,
+                        normalizedEndDate,
+                        githubGraphQL,
+                        repo.owner_login || ORG_NAME
+                    );
 
                     for (const [dateStr, stats] of statsMap) {
                         const contributorDetails = contributorDetailsMap.has(dateStr)

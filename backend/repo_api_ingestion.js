@@ -25,12 +25,17 @@ async function collectAndPersistRepoApiStats({
     githubRest,
     pool,
     orgName,
+    ownerLogin,
     repoId,
     repoName,
     snapshotDate,
     persistRepoApiStats = defaultPersistRepoApiStats,
 }) {
-    const repoQuery = `repo:${orgName}/${repoName}`;
+    // Search queries address the repository by its GitHub owner, which for
+    // associated-organization repositories differs from the dashboard
+    // organization.
+    const repositoryOwner = ownerLogin || orgName;
+    const repoQuery = `repo:${repositoryOwner}/${repoName}`;
 
     // Keep these requests sequential because GitHub's Search API has a low rate limit
     // and githubRest applies the delay and pagination policy between requests.
