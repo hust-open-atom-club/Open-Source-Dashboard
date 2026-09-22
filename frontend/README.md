@@ -12,10 +12,21 @@ npm ci
 npm run dev
 ```
 
-当前 `vite.config.js` 将开发服务器监听在 `0.0.0.0:80`，成功启动后本机可访问 `http://localhost`。如果端口 `80` 被占用或因权限不足出现 `EACCES`，可临时改用非特权端口（本机访问 `http://localhost:5173`）：
+当前 `vite.config.js` 使用 Vite 默认主机与端口，成功启动后本机可访问 `http://localhost:5173`（以终端输出为准）。如需在远程或容器环境中指定主机、端口、允许的 Host 或 HMR 参数，通过环境变量提供，不要写进配置文件：
+
+| 环境变量 | 作用 |
+|------|------|
+| `VITE_DEV_HOST` | 开发服务器监听主机，默认 `localhost` |
+| `VITE_DEV_PORT` | 开发服务器端口，默认 `5173` |
+| `VITE_ALLOWED_HOSTS` | 允许的 Host，逗号分隔；默认仅放行 localhost 与本机 IP |
+| `VITE_HMR_HOST` | HMR 主机；不设置时使用本地 HMR |
+| `VITE_HMR_PROTOCOL` | HMR 协议，随 `VITE_HMR_HOST` 生效，默认 `wss` |
+| `VITE_HMR_CLIENT_PORT` | HMR 客户端端口，随 `VITE_HMR_HOST` 生效，默认 `443` |
+
+例如在容器内监听全部网卡：
 
 ```bash
-npm run dev -- --port 5173
+VITE_DEV_HOST=0.0.0.0 npm run dev
 ```
 
 前端使用相对路径 `/api/v1` 请求后端；Vite 将 `/api` 请求代理到 `http://localhost:3000`。如果后端未启动，页面仍可能打开，但数据请求会失败。
