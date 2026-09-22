@@ -1,10 +1,15 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { getSigContributors } from '../services/api';
+import { useModalFocus } from '../hooks/useModalFocus';
 
 const SIGContributorModal = ({ sigId, sigName, range = '30d', onClose }) => {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const titleId = useId();
+    const closeButtonRef = useRef(null);
+
+    useModalFocus(closeButtonRef);
 
     const fetchContributors = useCallback(async () => {
         setLoading(true);
@@ -41,20 +46,25 @@ const SIGContributorModal = ({ sigId, sigName, range = '30d', onClose }) => {
             onClick={onClose}
         >
             <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby={titleId}
                 className="bg-gray-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden border border-gray-700 shadow-2xl"
                 onClick={e => e.stopPropagation()}
             >
                 {/* Header */}
                 <div className="flex items-center justify-between p-6 border-b border-gray-700 bg-gradient-to-r from-purple-900/30 to-blue-900/30">
                     <div>
-                        <h2 className="text-2xl font-bold text-white">{data?.sig?.name || sigName}</h2>
+                        <h2 id={titleId} className="text-2xl font-bold text-white">{data?.sig?.name || sigName}</h2>
                         <p className="text-sm text-gray-400">SIG 贡献者排行</p>
                     </div>
                     <button
+                        ref={closeButtonRef}
                         onClick={onClose}
+                        aria-label="关闭 SIG 贡献者排行"
                         className="text-gray-400 hover:text-white p-2 hover:bg-gray-700 rounded-lg transition-colors"
                     >
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg aria-hidden="true" className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                         </svg>
                     </button>
