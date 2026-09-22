@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     getOrgSummary,
     getAggregatedTimeseries,
@@ -11,6 +11,7 @@ import TrendChart from './charts/TrendChart';
 import SIGComparisonChart from './charts/SIGComparisonChart';
 import ViewSwitcher from './ViewSwitcher';
 import MultiSIGComparisonChart from './MultiSIGComparisonChart';
+import SIGSelector from './SIGSelector';
 import GrowthReport from './GrowthReport';
 import ExportMenu from './ExportMenu';
 import LoadingSkeleton from './LoadingSkeleton';
@@ -36,6 +37,11 @@ const Dashboard = () => {
     const [comparisonData, setComparisonData] = useState([]);
     const [repositoryRefreshToken, setRepositoryRefreshToken] = useState(0);
     const { toasts, addToast, removeToast } = useToast();
+
+    // 首次加载时默认全选；之后重新加载保留用户的选择
+    const selectionInitializedRef = useRef(false);
+    // 丢弃过期的对比请求响应，避免快速切换选择后图表停在旧数据上
+    const comparisonRequestIdRef = useRef(0);
 
     // Modal states
     const [selectedDate, setSelectedDate] = useState(null);
@@ -76,9 +82,16 @@ const Dashboard = () => {
             setTimeseries(timeseriesRes);
             setAllSigs(sigsRes);
 
-            // 自动选择所有 SIG 进行对比
+            // 首次加载默认选中全部 SIG；之后只剔除已不存在的 SIG，保留用户的选择
             const allSigIds = sigsRes.map(sig => sig.id);
-            setSelectedSigIds(allSigIds);
+            setSelectedSigIds(prev => {
+                if (!selectionInitializedRef.current) {
+                    selectionInitializedRef.current = true;
+                    return allSigIds;
+                }
+                const stillValid = prev.filter(id => allSigIds.includes(id));
+                return stillValid.length === prev.length ? prev : stillValid;
+            });
 
             // 2. Fetch basic SIG data for comparison chart
             const sigPromises = sigsRes.map(async (sig) => {
@@ -127,10 +140,22 @@ const Dashboard = () => {
     }, [range, granularity, fetchGrowthData, addToast]);
 
     const fetchComparisonData = useCallback(async () => {
+        // 一个都没选时接口会返回 400，这里直接清空图表数据，不发请求
+        if (selectedSigIds.length === 0) {
+            comparisonRequestIdRef.current += 1;
+            setComparisonData([]);
+            return;
+        }
+
+        const requestId = comparisonRequestIdRef.current + 1;
+        comparisonRequestIdRef.current = requestId;
+
         try {
             const data = await compareSigs(selectedSigIds, range, granularity);
+            if (comparisonRequestIdRef.current !== requestId) return;
             setComparisonData(data);
         } catch (error) {
+            if (comparisonRequestIdRef.current !== requestId) return;
             console.error("Failed to load comparison data", error);
             addToast('对比数据加载失败', 'error');
         }
@@ -141,10 +166,8 @@ const Dashboard = () => {
     }, [fetchAllData]);
 
     useEffect(() => {
-        if (selectedSigIds.length > 0) {
-            fetchComparisonData();
-        }
-    }, [selectedSigIds, fetchComparisonData]);
+        fetchComparisonData();
+    }, [fetchComparisonData]);
 
     const handleRefresh = () => {
         addToast('正在刷新数据...', 'info', 1000);
@@ -343,7 +366,13 @@ const Dashboard = () => {
 
             {/* Multi-SIG Comparison Chart */}
             <div className="flex h-[500px] flex-col rounded-xl border border-gray-700 bg-gray-800 p-6 shadow-xl mb-8">
-                <h3 className="mb-4 shrink-0 text-lg font-semibold">多 SIG 趋势对比</h3>
+                <h3 className="mb-3 shrink-0 text-lg font-semibold">多 SIG 趋势对比</h3>
+                <SIGSelector
+                    sigs={allSigs}
+                    selectedSigIds={selectedSigIds}
+                    onChange={setSelectedSigIds}
+                    className="mb-3 shrink-0"
+                />
                 <div className="min-h-0 flex-1">
                     <MultiSIGComparisonChart
                         sigs={comparisonData}
