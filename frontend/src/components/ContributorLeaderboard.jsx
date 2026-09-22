@@ -99,18 +99,20 @@ const ContributorLeaderboard = ({ range = '30d' }) => {
                 ) : (
                     <div className="space-y-3">
                         {contributors.map((contributor, index) => (
-                            <div
+                            <button
                                 key={contributor.username}
+                                type="button"
                                 onClick={() => setSelectedContributor(contributor.username)}
-                                className={`flex items-center gap-3 p-4 rounded-lg transition-all hover:scale-[1.02] cursor-pointer ${index < 3
+                                aria-label={`${contributor.username}，${currentMetric.label} ${getMetricValue(contributor)}，查看详情`}
+                                className={`w-full text-left flex items-center gap-3 p-4 rounded-lg transition-all hover:scale-[1.02] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 ${index < 3
                                         ? 'bg-gradient-to-r from-gray-700 to-gray-800 border border-gray-600'
                                         : 'bg-gray-700 hover:bg-gray-600'
                                     }`}
                             >
                                 {/* Rank */}
-                                <div className={`text-2xl font-bold ${getRankColor(index)} w-12 text-center`}>
+                                <span className={`text-2xl font-bold ${getRankColor(index)} w-12 text-center`}>
                                     {getRankIcon(index)}
-                                </div>
+                                </span>
 
                                 {/* Avatar */}
                                 <img
@@ -123,12 +125,12 @@ const ContributorLeaderboard = ({ range = '30d' }) => {
                                 />
 
                                 {/* Info */}
-                                <div className="flex-1 min-w-0">
-                                    <div className="font-semibold text-white truncate flex items-center gap-2">
+                                <span className="flex-1 min-w-0">
+                                    <span className="font-semibold text-white truncate flex items-center gap-2">
                                         {contributor.username}
                                         <span className="text-xs text-gray-500">点击查看详情</span>
-                                    </div>
-                                    <div className="text-sm text-gray-400 flex items-center gap-3">
+                                    </span>
+                                    <span className="text-sm text-gray-400 flex items-center gap-3">
                                         <span>活跃 {contributor.stats.active_days} 天</span>
                                         <span className="text-purple-400">P:{contributor.stats.prs_total}</span>
                                         <span className="text-green-400">I:{contributor.stats.issues_total}</span>
@@ -138,19 +140,19 @@ const ContributorLeaderboard = ({ range = '30d' }) => {
                                                 新成员
                                             </span>
                                         )}
-                                    </div>
-                                </div>
+                                    </span>
+                                </span>
 
                                 {/* Selected Metric Value */}
-                                <div className="text-right">
-                                    <div className={`text-2xl font-bold ${currentMetric.color}`}>
+                                <span className="text-right flex flex-col">
+                                    <span className={`text-2xl font-bold ${currentMetric.color}`}>
                                         {getMetricValue(contributor)}
-                                    </div>
-                                    <div className="text-xs text-gray-500">
+                                    </span>
+                                    <span className="text-xs text-gray-500">
                                         {currentMetric.label}
-                                    </div>
-                                </div>
-                            </div>
+                                    </span>
+                                </span>
+                            </button>
                         ))}
                     </div>
                 )}
