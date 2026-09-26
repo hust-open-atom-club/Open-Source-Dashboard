@@ -11,13 +11,8 @@
  *   --help           显示帮助信息
  */
 
-require('dotenv').config();
 const path = require('path');
-const {
-    runGraphQLBackfillForRange,
-    formatDate,
-    getScopedProgressFile,
-} = require('./run_graphql_backfill');
+const { parseBackfillArgs } = require('./backfill_date_range_args');
 
 function printUsage() {
     console.log(`
@@ -39,89 +34,22 @@ Options:
 `);
 }
 
-function parseDateLiteral(value, flagName) {
-    if (!value) {
-        throw new Error(`${flagName} requires a value in YYYY-MM-DD format.`);
-    }
-
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-        throw new Error(`${flagName} must use YYYY-MM-DD format.`);
-    }
-
-    const [year, month, day] = value.split('-').map(Number);
-    const parsedDate = new Date(year, month - 1, day);
-
-    if (formatDate(parsedDate) !== value) {
-        throw new Error(`${flagName} is not a valid calendar date.`);
-    }
-
-    return parsedDate;
-}
-
 // Existing snapshots remain visible until their replacements commit.
 
 async function main() {
-    const args = process.argv.slice(2);
-    let singleDateArg = null;
-    let startDateArg = null;
-    let endDateArg = null;
-    let flushCache = false;
-    let resetExisting = false;
-
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-
-        if (arg === '--help') {
-            printUsage();
-            return;
-        }
-
-        if (arg === '--flush-cache') {
-            flushCache = true;
-            continue;
-        }
-
-        if (arg === '--reset-existing') {
-            resetExisting = true;
-            continue;
-        }
-
-        if (arg === '--date') {
-            singleDateArg = args[++i];
-            continue;
-        }
-
-        if (arg === '--start-date') {
-            startDateArg = args[++i];
-            continue;
-        }
-
-        if (arg === '--end-date') {
-            endDateArg = args[++i];
-            continue;
-        }
-
-        throw new Error(`Unknown argument: ${arg}`);
+    const options = parseBackfillArgs(process.argv.slice(2));
+    if (options.help) {
+        printUsage();
+        return;
     }
 
-    if (singleDateArg && (startDateArg || endDateArg)) {
-        throw new Error('Use either --date or --start-date/--end-date, not both.');
-    }
-
-    if (!singleDateArg && (!startDateArg || !endDateArg)) {
-        throw new Error('You must provide either --date or both --start-date and --end-date.');
-    }
-
-    const startDate = singleDateArg
-        ? parseDateLiteral(singleDateArg, '--date')
-        : parseDateLiteral(startDateArg, '--start-date');
-    const endDate = singleDateArg
-        ? parseDateLiteral(singleDateArg, '--date')
-        : parseDateLiteral(endDateArg, '--end-date');
-
-    if (startDate > endDate) {
-        throw new Error('--start-date cannot be later than --end-date.');
-    }
+    const { startDate, endDate, flushCache, resetExisting } = options;
+    require('dotenv').config();
+    const {
+        runGraphQLBackfillForRange,
+        formatDate,
+        getScopedProgressFile,
+    } = require('./run_graphql_backfill');
 
     const progressFile = getScopedProgressFile(startDate, endDate);
     const description = startDate.getTime() === endDate.getTime()
