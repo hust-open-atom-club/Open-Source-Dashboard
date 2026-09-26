@@ -166,4 +166,21 @@ npm install
 npm run dev
 ```
 
-按 Vite 输出的地址打开仪表板。开发服务器会将 `/api` 请求代理到本机后端。
+默认在 `http://localhost:5173` 打开仪表板（以 Vite 输出的地址为准）。本地热更新不依赖生产域名，开发服务器会将 `/api` 请求代理到本机后端的 `http://localhost:3000`。
+
+如果端口 `5173` 已被占用，可以临时指定其他非特权端口：
+
+```bash
+npm run dev -- --port 5174
+```
+
+需要通过其他域名访问开发服务器时，可在 `frontend/.env.local` 中按需配置以下变量（不要提交该文件）：
+
+```env
+DEV_SERVER_ALLOWED_HOST=dev.example.com
+DEV_SERVER_HMR_HOST=dev.example.com
+DEV_SERVER_HMR_PROTOCOL=wss
+DEV_SERVER_HMR_CLIENT_PORT=443
+```
+
+本机开发无需设置这些变量。`DEV_SERVER_ALLOWED_HOST` 用于允许指定域名访问，其他变量分别控制热更新客户端使用的域名、协议和端口。

@@ -12,11 +12,7 @@ npm ci
 npm run dev
 ```
 
-当前 `vite.config.js` 将开发服务器监听在 `0.0.0.0:80`，成功启动后本机可访问 `http://localhost`。如果端口 `80` 被占用或因权限不足出现 `EACCES`，可临时改用非特权端口（本机访问 `http://localhost:5173`）：
-
-```bash
-npm run dev -- --port 5173
-```
+开发服务器的默认地址、端口调整和自定义 HMR 配置统一见[快速开始中的“启动前端”](../docs/getting-started.md#3-启动前端)。
 
 前端使用相对路径 `/api/v1` 请求后端；Vite 将 `/api` 请求代理到 `http://localhost:3000`。如果后端未启动，页面仍可能打开，但数据请求会失败。
 
