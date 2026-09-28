@@ -154,7 +154,7 @@ test('database synchronization preserves untracked rows and reaggregates changed
         assignments: [
             { repositoryId: '301', repositoryName: 'tracked-old', propertyValue: 'r2', sigSlug: 'r2' },
             { repositoryId: '302', repositoryName: 'already-untracked', propertyValue: 'untracked', sigSlug: null },
-            { repositoryId: '303', repositoryName: 'new-repo', propertyValue: 'hctt', sigSlug: 'hctt' },
+            { repositoryId: '303', repositoryName: 'new-repo', propertyValue: 'hctt', sigSlug: 'hctt', githubCreatedAt: '2026-09-21T14:04:30.000Z' },
         ],
     });
 
@@ -162,6 +162,8 @@ test('database synchronization preserves untracked rows and reaggregates changed
     assert.equal(result.tracked, 2);
     assert.equal(result.untracked, 1);
     assert.equal(result.created, 1);
+    assert.ok(queries.some(query => query.sql.includes('INSERT INTO repositories')
+        && query.sql.includes('github_created_at') && query.params[4] === '2026-09-21T14:04:30.000Z'));
     assert.equal(result.disabled, 2);
     assert.deepEqual(
         result.changes.map((change) => change.repository).sort(),
