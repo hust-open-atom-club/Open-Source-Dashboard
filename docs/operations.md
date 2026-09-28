@@ -50,6 +50,7 @@ psql -d oss_dashboard -f db/migrations/001_github_custom_property_sigs.sql
 psql -d oss_dashboard -f db/migrations/002_repository_organization_membership.sql
 psql -d oss_dashboard -f db/migrations/003_organization_ingestion_freshness.sql
 psql -d oss_dashboard -f db/migrations/004_snapshot_generation.sql
+psql -d oss_dashboard -f db/migrations/005_repository_github_created_at.sql
 ```
 
 生产数据库迁移前：
@@ -78,6 +79,24 @@ docker compose exec backend npm run sync-repository-sigs
 项目的 npm 命令会调用同步脚本的 `--flush-cache` 选项；只有检测到归属变化时才清空 Redis。同步会处理仓库新增、重命名、移出组织、转移和 SIG 归属变化。远端数据未完整分页取得时任务会失败，不会用部分列表覆盖当前状态。
 
 ## 历史回填
+
+### 新仓库与历史覆盖
+
+仓库同步会额外获取 GitHub 仓库元数据并保存 `repositories.github_created_at`。
+这个字段表示 GitHub 仓库创建时间，不是本地登记时间，也不是转入俱乐部的时间。
+元数据或 Custom Property 列表不完整、仓库 ID 对不上时，同步整体失败，不写入部分列表。
+
+每次日常采集成功发布后，自动检查已有组织快照日期中的仓库缺行，优先补最近的缺口。
+单次最多处理 31 个日期，每批最多 7 个日期，只修改缺行仓库；同日缺少多个仓库时一起原子发布。
+每个成功日期都会从下次缺口扫描中消失，失败后由后续定时任务继续，不依赖进程内进度。
+补历史不推进成功采集时间；补历史失败也不会撤销已经成功的日常采集。
+
+只读一致性检查会单独输出创建前待核实（`pre_creation_unverified`）、创建后缺快照（`missing_after_creation`）和创建时间未知（`unknown_creation_time`）。
+创建前待核实不等于漏掉真实贡献，但仍需检查历史后才能判零：导入提交可能早于 GitHub 仓库创建日。
+自动补齐不会按创建时间截断 Commit 历史；只有完整采集成功且无活动时才写入零值快照。
+存在任一未核实缺行或汇总差异时检查器退出码为 1，不能据此直接删除历史或批量填零。
+
+上线本功能前先应用 `005_repository_github_created_at.sql`；保持现有统计口径和生产环境时区一致。
 
 回填最近 N 天：
 

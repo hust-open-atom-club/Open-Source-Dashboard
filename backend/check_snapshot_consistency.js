@@ -2,6 +2,7 @@ require('dotenv').config();
 const { Pool } = require('pg');
 const { validateDate } = require('./snapshot_batch');
 const { checkSnapshotConsistency } = require('./snapshot_hierarchy');
+const { findMissingRepositorySnapshots } = require('./repository_snapshot_coverage');
 
 async function main(args = process.argv.slice(2)) {
     if (args.length > 1) throw new Error('Usage: node check_snapshot_consistency.js [YYYY-MM-DD]');
@@ -24,9 +25,13 @@ async function main(args = process.argv.slice(2)) {
         ) dates WHERE $2::date IS NULL OR snapshot_date = $2`, [rows[0].id, date]);
         if (!coverage.rows[0].days) throw new Error('No snapshots found in the requested scope');
         const differences = await checkSnapshotConsistency(client, rows[0].id, date);
-        console.log(JSON.stringify({ date: date || 'all', checked_dates: coverage.rows[0].days, differences }, null, 2));
+        const missing = await findMissingRepositorySnapshots(client, rows[0].id, date);
+        const repositoryCoverage = Object.fromEntries(['pre_creation_unverified', 'missing_after_creation', 'unknown_creation_time']
+            .map(reason => [reason, missing.filter(row => row.reason === reason).length]));
+        console.log(JSON.stringify({ date: date || 'all', checked_dates: coverage.rows[0].days, differences,
+            repository_coverage: repositoryCoverage, missing_repository_samples: missing.slice(0, 20) }, null, 2));
         await client.query('COMMIT');
-        if (differences.length) process.exitCode = 1;
+        if (differences.length || missing.length) process.exitCode = 1;
     } catch (error) {
         if (client) await client.query('ROLLBACK').catch(() => {});
         throw error;

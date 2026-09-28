@@ -374,6 +374,36 @@ async function reaggregateAffectedHistoricalSnapshots(client, orgId, affectedSig
     };
 }
 
+// Join by stable GitHub ID, not the local registration timestamp or repo name.
+// Fetch the complete metadata listing before applying any database changes.
+async function fetchRepositoryCreationTimes({ githubToken, orgName = DEFAULT_ORG_NAME, httpClient = axios }) {
+    const headers = githubHeaders(githubToken);
+    const repositories = new Map();
+    const visited = new Set();
+    let nextUrl = `https://api.github.com/orgs/${encodeURIComponent(orgName)}/repos?type=all&per_page=100`;
+    while (nextUrl) {
+        if (visited.has(nextUrl)) throw new Error('Repository metadata pagination repeated');
+        visited.add(nextUrl);
+        const response = await httpClient.get(nextUrl, { headers, timeout: 30000 });
+        if (!Array.isArray(response.data)) throw new Error('Repository metadata must be an array');
+        for (const repository of response.data) {
+            const id = String(repository.id);
+            if (!/^[1-9]\d*$/.test(id) || (typeof repository.id === 'number' && !Number.isSafeInteger(repository.id))
+                || typeof repository.name !== 'string' || !repository.name
+                || typeof repository.created_at !== 'string' || !Number.isFinite(Date.parse(repository.created_at))) {
+                throw new Error('Invalid repository creation metadata');
+            }
+            if (repositories.has(id)) throw new Error(`Duplicate repository metadata ID ${id}`);
+            repositories.set(id, { name: repository.name, createdAt: new Date(repository.created_at).toISOString() });
+        }
+        nextUrl = getNextPageUrl(response.headers?.link);
+        if (nextUrl && new URL(nextUrl).origin !== 'https://api.github.com') {
+            throw new Error('Unexpected repository metadata pagination origin');
+        }
+    }
+    return repositories;
+}
+
 async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFAULT_ORG_NAME }) {
     const client = await pool.connect();
 
@@ -402,7 +432,7 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
         }
 
         const existingResult = await client.query(
-            `SELECT r.id, r.github_id, r.name, r.sig_id, r.is_in_organization, sig.slug AS sig_slug
+            `SELECT r.id, r.github_id, r.name, r.sig_id, r.is_in_organization, r.github_created_at, sig.slug AS sig_slug
              FROM repositories r
              LEFT JOIN special_interest_groups sig ON sig.id = r.sig_id
              WHERE r.org_id = $1`,
@@ -431,6 +461,7 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
         let created = 0;
         let disabled = 0;
         let trackingChanged = false;
+        let metadataUpdated = 0;
 
         const assignmentPlans = assignments.map((assignment) => {
             let existing = existingByGithubId.get(assignment.repositoryId);
@@ -486,9 +517,9 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
 
             if (!existing) {
                 await client.query(
-                    `INSERT INTO repositories (org_id, sig_id, github_id, name, is_in_organization)
-                     VALUES ($1, $2, $3, $4, TRUE)`,
-                    [orgId, targetSigId, assignment.repositoryId, assignment.repositoryName]
+                    `INSERT INTO repositories (org_id, sig_id, github_id, name, is_in_organization, github_created_at)
+                     VALUES ($1, $2, $3, $4, TRUE, $5)`,
+                    [orgId, targetSigId, assignment.repositoryId, assignment.repositoryName, assignment.githubCreatedAt || null]
                 );
                 if (targetSigId !== null) {
                     affectedSigIds.add(targetSigId);
@@ -502,14 +533,18 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
             const nameChanged = existing.name !== assignment.repositoryName;
             const githubIdChanged = existing.github_id === null;
             const membershipChanged = existing.is_in_organization === false;
-            if (mappingChanged || nameChanged || githubIdChanged || membershipChanged) {
+            const creationChanged = Boolean(assignment.githubCreatedAt) && (
+                !existing.github_created_at || new Date(existing.github_created_at).toISOString() !== assignment.githubCreatedAt);
+            if (mappingChanged || nameChanged || githubIdChanged || membershipChanged || creationChanged) {
                 await client.query(
                     `UPDATE repositories
-                     SET name = $1, sig_id = $2, github_id = $3, is_in_organization = TRUE
+                     SET name = $1, sig_id = $2, github_id = $3, is_in_organization = TRUE,
+                         github_created_at = COALESCE($5::timestamptz, github_created_at)
                      WHERE id = $4`,
-                    [assignment.repositoryName, targetSigId, assignment.repositoryId, existing.id]
+                    [assignment.repositoryName, targetSigId, assignment.repositoryId, existing.id, assignment.githubCreatedAt || null]
                 );
             }
+            if (creationChanged) metadataUpdated += 1;
             if (mappingChanged) {
                 if ((existing.sig_id === null) !== (targetSigId === null)) {
                     trackingChanged = true;
@@ -575,6 +610,7 @@ async function applyRepositorySigAssignments({ pool, assignments, orgName = DEFA
             untracked: assignments.filter((assignment) => assignment.sigSlug === null).length,
             created,
             disabled,
+            metadataUpdated,
             changes,
             affectedSigIds: [...affectedSigIds],
             reaggregation,
@@ -601,6 +637,16 @@ async function syncRepositorySigsFromGitHub({
         httpClient,
     });
 
+    const metadata = await fetchRepositoryCreationTimes({ githubToken, orgName, httpClient });
+    if (metadata.size !== assignments.length) throw new Error('Repository metadata and Custom Property coverage differ; retry synchronization');
+    for (const assignment of assignments) {
+        const repository = metadata.get(assignment.repositoryId);
+        if (!repository || repository.name.toLowerCase() !== assignment.repositoryName.toLowerCase()) {
+            throw new Error(`Repository metadata changed or is missing for ${assignment.repositoryName}`);
+        }
+        assignment.githubCreatedAt = repository.createdAt;
+    }
+
     return applyRepositorySigAssignments({ pool, assignments, orgName });
 }
 
@@ -613,6 +659,7 @@ module.exports = {
     normalizeAssignments,
     validatePropertyDefinition,
     fetchRepositorySigAssignments,
+    fetchRepositoryCreationTimes,
     reaggregateContributorDailyActivities,
     reaggregateAffectedHistoricalSnapshots,
     applyRepositorySigAssignments,

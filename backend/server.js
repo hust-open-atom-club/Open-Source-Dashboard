@@ -28,6 +28,7 @@ const { collectRepoApiStats } = require('./repo_api_ingestion');
 const { collectSnapshotBatch, publishSnapshotBatch, readSnapshotGeneration, invalidateSnapshotCaches } = require('./snapshot_batch');
 const { backfillSnapshotDates } = require('./snapshot_backfill');
 const { installSnapshotCache } = require('./snapshot_cache');
+const { repairMissingRepositoryHistory } = require('./repository_history_backfill');
 const {
     REPOSITORY_INSIGHTS_SQL,
     mapRepositoryInsightRows,
@@ -360,6 +361,18 @@ async function runDailyIngestionJob() {
             afterCommit: () => invalidateSnapshotCaches(redisClient, pool, org.id, ORG_NAME),
         });
         console.log('Daily snapshot published:', snapshotDate);
+        // Historical repair is independent of today's freshness. A failed
+        // repair never undoes or mislabels the successfully published daily job.
+        try {
+            const repair = await repairMissingRepositoryHistory({ pool, orgId: org.id, orgName: ORG_NAME,
+                fetchCommits: (repo, first, last) => fetchCommitHistoryViaGraphQL(repo.name, first, last, githubGraphQL, ORG_NAME),
+                fetchApi: (repo, first, last) => fetchRepoStatsViaGraphQL(repo.name, first, last),
+                afterCommit: () => invalidateSnapshotCaches(redisClient, pool, org.id, ORG_NAME),
+            });
+            console.log('Repository history coverage repair:', repair);
+        } catch (error) {
+            console.error('Daily snapshot committed; repository history repair failed:', error.message);
+        }
     } catch (error) {
         console.error('Daily ingestion failed:', error);
     }
