@@ -76,6 +76,7 @@ const SIGComparisonChart = ({ title, data, metricKey, metricName, color = '#3b82
         },
         yAxis: {
             type: 'category',
+            inverse: true,
             data: categories,
             axisLine: {
                 lineStyle: {
