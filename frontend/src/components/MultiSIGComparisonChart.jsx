@@ -124,8 +124,17 @@ const MultiSIGComparisonChart = ({ sigs, selectedSigIds, metric = 'new_prs' }) =
         <div className="h-full">
             {/* Chart */}
             <div style={{ height: '100%' }}>
-                {chartData.length > 0 ? (
-                    <ReactECharts option={getOption()} style={{ height: '100%', width: '100%' }} />
+                {selectedSigIds.length === 0 ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-2 text-gray-400">
+                        <span>尚未选择任何 SIG</span>
+                        <span className="text-sm text-gray-500">请在上方勾选要对比的 SIG</span>
+                    </div>
+                ) : chartData.length > 0 ? (
+                    <ReactECharts
+                        option={getOption()}
+                        notMerge
+                        style={{ height: '100%', width: '100%' }}
+                    />
                 ) : (
                     <div className="flex items-center justify-center h-full text-gray-400">
                         加载中...
