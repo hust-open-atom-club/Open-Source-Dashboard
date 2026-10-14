@@ -73,6 +73,8 @@ docker compose exec backend node run_graphql_backfill.js 30
 
 完整的 Docker、本机开发和数据库初始化步骤见[快速开始](docs/getting-started.md)。
 
+也可以使用 GHCR 上的前端、后端预构建镜像；发布流程仅支持手动触发，始终构建 `main` 的最新提交。镜像名称、发布与部署步骤见[容器镜像](docs/container-images.md)。
+
 ## 文档
 
 | 文档 | 内容 |

@@ -1,11 +1,11 @@
 .git
 .gitignore
-.env
-**/.env
+.env*
+**/.env*
 **/node_modules
 **/dist
-repos
-exports
+**/repos
+**/exports
 *.log
 docs
 note
