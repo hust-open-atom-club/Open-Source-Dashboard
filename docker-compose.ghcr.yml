@@ -1,0 +1,7 @@
+# Use with docker-compose.yml; keep the existing database, migrations and config.
+# Both images must use the same published main commit tag (or latest).
+services:
+  backend:
+    image: ${GHCR_IMAGE_PREFIX:-ghcr.io/hust-open-atom-club/open-source-dashboard}/backend:${IMAGE_TAG:-latest}
+  frontend:
+    image: ${GHCR_IMAGE_PREFIX:-ghcr.io/hust-open-atom-club/open-source-dashboard}/frontend:${IMAGE_TAG:-latest}
