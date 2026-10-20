@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import ReactECharts from 'echarts-for-react';
 
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+// Keep a distinct color for each of the nine supported SIGs.
+const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#f8fafc'];
 
 const MultiSIGComparisonChart = ({ sigs, selectedSigIds, metric = 'new_prs' }) => {
     const [chartData, setChartData] = useState([]);
