@@ -126,25 +126,32 @@ const Dashboard = () => {
         }
     }, [range, granularity, fetchGrowthData, addToast]);
 
-    const fetchComparisonData = useCallback(async () => {
-        try {
-            const data = await compareSigs(selectedSigIds, range, granularity);
-            setComparisonData(data);
-        } catch (error) {
-            console.error("Failed to load comparison data", error);
-            addToast('对比数据加载失败', 'error');
-        }
-    }, [selectedSigIds, range, granularity, addToast]);
-
     useEffect(() => {
         fetchAllData();
     }, [fetchAllData]);
 
     useEffect(() => {
-        if (selectedSigIds.length > 0) {
-            fetchComparisonData();
-        }
-    }, [selectedSigIds, fetchComparisonData]);
+        let cancelled = false;
+        setComparisonData([]);
+        if (selectedSigIds.length === 0) return;
+
+        const loadComparison = async () => {
+            try {
+                const data = await compareSigs(selectedSigIds, range, granularity);
+                if (!cancelled) setComparisonData(data);
+            } catch (error) {
+                if (!cancelled) {
+                    console.error("Failed to load comparison data", error);
+                    addToast('对比数据加载失败', 'error');
+                }
+            }
+        };
+
+        loadComparison();
+        return () => {
+            cancelled = true;
+        };
+    }, [selectedSigIds, range, granularity, addToast]);
 
     const handleRefresh = () => {
         addToast('正在刷新数据...', 'info', 1000);
