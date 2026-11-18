@@ -50,18 +50,6 @@ const Dashboard = () => {
         { key: 'commits', label: 'Commit', name: 'Commit', color: '#10b981' }
     ];
 
-    const fetchGrowthData = useCallback(async () => {
-        setGrowthLoading(true);
-        try {
-            const growth = await getGrowthAnalysis('org', null, range);
-            setGrowthData(growth);
-        } catch (error) {
-            console.error("Failed to load growth data", error);
-        } finally {
-            setGrowthLoading(false);
-        }
-    }, [range]);
-
     const fetchAllData = useCallback(async () => {
         setLoading(true);
         try {
@@ -114,9 +102,6 @@ const Dashboard = () => {
             const sigsData = await Promise.all(sigPromises);
             setSigData(sigsData);
 
-            // 3. Fetch growth analysis
-            fetchGrowthData();
-
             addToast('数据加载成功', 'success');
         } catch (error) {
             console.error("Failed to load dashboard data", error);
@@ -124,11 +109,33 @@ const Dashboard = () => {
         } finally {
             setLoading(false);
         }
-    }, [range, granularity, fetchGrowthData, addToast]);
+    }, [range, granularity, addToast]);
 
     useEffect(() => {
         fetchAllData();
     }, [fetchAllData]);
+
+    useEffect(() => {
+        let cancelled = false;
+        setGrowthData(null);
+        setGrowthLoading(true);
+
+        const loadGrowth = async () => {
+            try {
+                const growth = await getGrowthAnalysis('org', null, range);
+                if (!cancelled) setGrowthData(growth);
+            } catch (error) {
+                if (!cancelled) console.error('Failed to load growth data', error);
+            } finally {
+                if (!cancelled) setGrowthLoading(false);
+            }
+        };
+
+        loadGrowth();
+        return () => {
+            cancelled = true;
+        };
+    }, [range, repositoryRefreshToken]);
 
     useEffect(() => {
         let cancelled = false;
