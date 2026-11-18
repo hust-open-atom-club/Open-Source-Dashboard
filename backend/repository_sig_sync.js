@@ -13,7 +13,7 @@ const SIG_DEFINITIONS = Object.freeze({
     infrastructure: '数字基础设施维护 SIG',
     llmagent: 'Agent SIG',
     openharmony: 'OpenHarmony SIG',
-    rtthread: 'RT-thread SIG',
+    rtos: 'RTOS SIG',
 });
 
 function getNextPageUrl(linkHeader) {

@@ -51,6 +51,7 @@ psql -d oss_dashboard -f db/migrations/002_repository_organization_membership.sq
 psql -d oss_dashboard -f db/migrations/003_organization_ingestion_freshness.sql
 psql -d oss_dashboard -f db/migrations/004_snapshot_generation.sql
 psql -d oss_dashboard -f db/migrations/005_repository_github_created_at.sql
+psql -d oss_dashboard -f db/migrations/006_rename_rtthread_to_rtos.sql
 ```
 
 生产数据库迁移前：
@@ -60,6 +61,8 @@ psql -d oss_dashboard -f db/migrations/005_repository_github_created_at.sql
 3. 确认目标数据库身份后再维护生产环境。
 
 不要在已有生产数据库上重新执行完整的 `db/schema.sql` 代替迁移。
+
+`006` 将旧的 `rtthread` 分类改为 `rtos`（RTOS SIG），保留 SIG ID、仓库关联和历史快照。升级时先执行迁移，再启动新版后端并同步仓库。
 
 ## 仓库与 SIG 同步
 

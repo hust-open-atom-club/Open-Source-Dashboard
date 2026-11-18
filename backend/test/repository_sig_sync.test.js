@@ -83,6 +83,20 @@ test('Custom Property reader fails closed on an unsupported schema value', async
     assert.equal(calls, 1);
 });
 
+test('assignment normalization accepts rtos and rejects the retired rtthread value', () => {
+    assert.deepEqual(normalizeAssignments([
+        propertyRow('Open-Source-IoT-System-Community-Task-List', 'rtos', 200),
+    ], 'osd_sig'), [{
+        repositoryId: '200',
+        repositoryName: 'Open-Source-IoT-System-Community-Task-List',
+        propertyValue: 'rtos',
+        sigSlug: 'rtos',
+    }]);
+    assert.throws(() => normalizeAssignments([
+        propertyRow('old-repo', 'rtthread', 200),
+    ], 'osd_sig'), /unsupported osd_sig value: rtthread/);
+});
+
 test('assignment normalization rejects duplicate repository rows ignoring case', () => {
     assert.throws(
         () => normalizeAssignments([

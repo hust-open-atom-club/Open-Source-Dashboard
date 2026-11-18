@@ -16,5 +16,5 @@ INSERT INTO special_interest_groups (org_id, slug, name) VALUES
 ((SELECT id FROM organizations WHERE name = 'hust-open-atom-club'), 'infrastructure', '数字基础设施维护 SIG'),
 ((SELECT id FROM organizations WHERE name = 'hust-open-atom-club'), 'llmagent', 'Agent SIG'),
 ((SELECT id FROM organizations WHERE name = 'hust-open-atom-club'), 'openharmony', 'OpenHarmony SIG'),
-((SELECT id FROM organizations WHERE name = 'hust-open-atom-club'), 'rtthread', 'RT-thread SIG')
+((SELECT id FROM organizations WHERE name = 'hust-open-atom-club'), 'rtos', 'RTOS SIG')
 ON CONFLICT (org_id, slug) DO UPDATE SET name = EXCLUDED.name;
